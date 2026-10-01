@@ -1,4 +1,4 @@
-# LivePlay+ Phase 1.5: analysis foundation
+# LivePlay+ Phase 1.6: analysis foundation and external worker boundary
 
 Analysis is optional server-side data. Neither AudioEngine, ProjectState, playback commands nor `.liveplay` reference these services. No analyzers, models, music DSP or Python runtime have been added. All analysis capabilities are false.
 
@@ -13,15 +13,15 @@ Analysis is optional server-side data. Neither AudioEngine, ProjectState, playba
 
 Jobs are persisted separately in `plus/analysis/jobs.json` (256 jobs maximum, 8 MiB read bound). No analysis is enqueued automatically on import. An empty scheduler performs no processing. Requests for unavailable providers end as failed jobs with explicit errors. Failed records have null analytical values. A stopped scheduler rejects new jobs; Track access and playback remain available.
 
-The scheduler currently dispatches its provider interface on a separate C++ thread. This is orchestration scaffolding, not a production MIR execution path. The next provider must be an external process adapter with timeouts, bounded output, cancellation and process-tree cleanup before any heavy algorithm is enabled. A synchronous provider that never returns would block scheduler shutdown; no such provider ships.
+The scheduler dispatches providers from a separate orchestration thread and yields while Performance Mode detects active playback. `ExternalAnalysisProvider` is now the process adapter: one hidden external process per request on Windows, bounded JSON Lines stdout (8 MiB), timeout, cancellation, correlation checking and forced termination on timeout/crash. A fresh process is created for the next request after failure. The bundled worker is a mock only; no MIR algorithm, Python runtime or model ships.
 
 ```mermaid
 flowchart LR
   HTTP[Plus HTTP] --> Library[LibraryService]
   HTTP --> Scheduler[AnalysisScheduler]
   Scheduler --> Jobs[Durable jobs]
-  Scheduler --> Adapter[AnalysisProvider process adapter: future]
-  Adapter --> Worker[Independent Analysis Worker: future]
+  Scheduler --> Adapter[ExternalAnalysisProvider]
+  Adapter --> Worker[Independent mock / future worker]
   Worker --> Adapter
   Scheduler --> Results[TrackAnalysisRepository]
   Engine[Existing AudioEngine]
@@ -49,22 +49,16 @@ This initial schema validates identity, version, section envelopes and size. Alg
 
 ## JSON/IPC protocol
 
-`worker_request()` and `worker_response()` define and validate the future process boundary. Use newline-delimited UTF-8 JSON on stdin/stdout with a maximum 8 MiB envelope; logs go to stderr. Example request:
+`ExternalAnalysisProvider` defines and validates the process boundary. Use newline-delimited UTF-8 JSON on stdin/stdout with a maximum 8 MiB envelope; logs go to stderr. The concrete protocol is [ANALYSIS_WORKER_PROTOCOL](ANALYSIS_WORKER_PROTOCOL.md). The currently implemented request is:
 
 ```json
 {
-  "protocol_version": 1,
-  "operation": "analyze",
-  "job": {
-    "id": "job_track_<sha256>_provider",
-    "track_id": "track_<sha256>",
-    "content_hash": "sha256:<hash>",
-    "provider": "provider",
-    "asset_path": "C:/.../plus/assets/<hash>.wav",
-    "analysis_version": 1,
-    "status": "pending",
-    "error": ""
-  }
+  "protocolVersion": 1,
+  "type": "analyze",
+  "requestId": "request-uuid",
+  "trackId": "track_<sha256>",
+  "path": "C:/.../plus/assets/<hash>.wav",
+  "contentHash": "sha256:<hash>"
 }
 ```
 
@@ -72,14 +66,15 @@ Successful response:
 
 ```json
 {
-  "protocol_version": 1,
-  "job_id": "job_track_<sha256>_provider",
-  "content_hash": "sha256:<hash>",
-  "analysis": {"track_id": "track_<sha256>", "analysis_version": 1, "status": "completed", "providers": {}}
+  "protocolVersion": 1,
+  "type": "result",
+  "requestId": "request-uuid",
+  "status": "ok",
+  "data": {}
 }
 ```
 
-The validator rejects another job ID/hash/Track, unsupported versions, oversized documents and non-completed results. The scheduler checks current asset SHA-256 before and after execution and validates the provider result identity before commit. An external adapter must enforce timeouts/output limits and translate worker failures into job errors; it must not trust executable paths from HTTP input.
+The adapter rejects a mismatched request ID, unsupported version, malformed/oversized output and non-object data. It maps the valid nullable data to the TrackAnalysis record and translates an error, crash, timeout or cancellation into a failed job. It must not trust executable paths from HTTP input.
 
 Windows deployment: hidden worker process, Unicode paths, bounded concurrency, CPU baseline, no WSL requirement. Heavy workers can later be Python for Essentia/MIR, but runtimes, packages, weights, licenses and reproducible installation must be reviewed first. No Internet or LLM dependency is permitted in audio rendering. Provider failure must never request transport changes.
 
@@ -96,4 +91,4 @@ These routes reuse operator authentication and exclude filesystem access by API 
 
 Native tests exercise the empty/stopped scheduler, nullable/failed records, running-job recovery, independent Track access and protocol correlation rejection. HTTP E2E submits an unavailable provider and verifies project/cue snapshots remain unchanged. This validates data/control isolation, not an uninterrupted-audio latency guarantee under CPU/IO contention.
 
-Before a real provider: external process adapter, timeout/cancel protocol, versioned cache keys, granular schema validators, concurrency/resource budgets, job history/compaction, all-or-nothing result ownership across multiple providers, malformed-store backups and live audio contention measurements. No AutoDJ, beatmatching, stems or AI is part of this phase.
+Before a real provider: versioned cache keys, granular schema validators, concurrency/resource budgets, job history/compaction, all-or-nothing result ownership across multiple providers, malformed-store backups and a corpus with live audio contention measurements. No AutoDJ, beatmatching, stems or AI is part of this phase.

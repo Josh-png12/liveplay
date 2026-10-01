@@ -2,7 +2,7 @@
 
 Fecha de revisión: 2026-09-30. Base: LivePlay 2.5.0, commit `44ac17c885ff4a6dde96e8332001735494ccc50e`.
 
-Este documento conserva el diagnóstico inicial y la propuesta modular para LivePlay+. Library/Import y la foundation de análisis ya están implementados hasta Phase 1.5; los módulos musicales futuros siguen siendo propuesta. El estado actualizado aparece al final y en LIBRARY_IMPORT.md / ANALYSIS_ARCHITECTURE.md.
+Este documento conserva el diagnóstico inicial y la propuesta modular para LivePlay+. Library/Import, su persistencia durable y la foundation de análisis ya están implementados hasta Phase 1.6; los módulos musicales futuros siguen siendo propuesta. El estado actualizado aparece al final y en LIBRARY_IMPORT.md / ANALYSIS_ARCHITECTURE.md.
 
 ## 1. Alcance y conclusión
 
@@ -334,6 +334,6 @@ El diagnóstico inicial se limitó a documentación e inventario. La validación
 
 ## Estado de implementación posterior al análisis
 
-Phase 1.5 extiende Track/TrackRepository y el worker existente: directorio Plus por usuario con override, migración por copia, referencias relativas, status missing/corrupt, relink verificado, mantenimiento/recovery explícito y Smart Library UI. AnalysisScheduler/AnalysisJob/TrackAnalysisRepository/AnalysisProvider están implementados como interfaces y orquestación sin algoritmos. Heavy workers siguen siendo un adaptador futuro externo con protocolo JSON versionado. No hay cambios al motor/proyecto.
+Phase 1.6 conserva Track/TrackRepository como contrato sustituible y cambia sólo su implementación JSON: journal append-only fsync, publicación atómica de snapshots, replay idempotente y compaction coalescida. Un bloqueo de store de vida de proceso impide dos escritores sobre una biblioteca; un conflicto es recuperable y no degrada a escrituras silenciosas. Al detectar transporte activo, Performance Mode limita I/O de import y difiere compaction. Ninguna de estas rutas accede a AudioEngine desde el hilo de render.
 
-La biblioteca JSON continúa acotada a 10.000 Tracks. [Benchmark](LIBRARY_BENCHMARK.md) documenta 100/500/1.000 imports reales del pipeline con fixtures pequeños: la persistencia es el cuello de botella. No se migra storage; batching y journals incrementales son propuestas posteriores. `.liveplay` y REST/WebSocket LivePlay permanecen separados de Plus.
+`AnalysisScheduler` sigue separado de reproducción y ahora puede usar un adaptador de proceso externo JSON Lines con versiones, timeout, cancelación, health check, límites de salida y aislamiento de fallos. El worker mock es la única implementación; no hay Essentia, BPM, tonalidad, waveform, stems ni IA. `.liveplay`, `ProjectState`, los endpoints REST/WebSocket existentes y la semántica de motor permanecen separados de Plus. Véanse [LIBRARY_IMPORT](LIBRARY_IMPORT.md), [LIBRARY_BENCHMARK](LIBRARY_BENCHMARK.md), [AUDIO_ISOLATION_TESTS](AUDIO_ISOLATION_TESTS.md) y [ANALYSIS_WORKER_PROTOCOL](ANALYSIS_WORKER_PROTOCOL.md).

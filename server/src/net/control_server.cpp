@@ -25,12 +25,16 @@
 #include "liveplay/library/data_directory.hpp"
 #include "liveplay/library/maintenance.hpp"
 #include "liveplay/analysis/analysis.hpp"
+#include "liveplay/analysis/worker_adapter.hpp"
 #include "liveplay/util/atomic_json.hpp"
 #include "liveplay/import/import_service.hpp"
 
 #if defined(_WIN32)
 #  include <windows.h>      // GetLogicalDrives(), GetVolumeInformationW(), ...
 #  include <winnetwk.h>     // WNetGetConnectionW() — mapped-network-drive UNC
+#  include <psapi.h>
+#else
+#  include <sys/resource.h>
 #endif
 
 #include <crow.h>
@@ -250,6 +254,7 @@ struct ControlServer::Impl {
     std::unique_ptr<library::LibraryMaintenance> library_maintenance;
     std::unique_ptr<analysis::JsonTrackAnalysisRepository> analysis_repository;
     std::unique_ptr<analysis::AnalysisScheduler> analysis_scheduler;
+    std::atomic<bool> performance_mode{true};
 
     // Caller holds ws_mutex. UserStore never calls back into the server while
     // holding its lock. Rejection sticks until onclose removes the connection.
@@ -1029,14 +1034,22 @@ ControlServer::ControlServer(audio::AudioEngine& engine,
     // Same reasoning, same moment: the guard has to know where to look up a
     // token before any request can arrive.
     impl_->app.get_middleware<AuthGuard>().users = &users_;
+    const auto protect_audio = [this] {
+        if (!impl_->performance_mode.load(std::memory_order_relaxed)) return false;
+        for (const auto& cue : state_.list_cues()) {
+            const auto* item = engine_.find_cue(cue.id);
+            if (item && item->stats().transport != audio::TransportState::Stopped) return true;
+        }
+        return false;
+    };
     if (!cfg_.plus_library_dir.empty() && cfg_.plus_storage_error.empty()) {
         try {
             impl_->track_repository = std::make_unique<library::JsonTrackRepository>(
-                cfg_.plus_library_dir / "catalog.json", cfg_.plus_data_dir);
+                cfg_.plus_library_dir / "catalog.json", cfg_.plus_data_dir, protect_audio);
             impl_->library_service = std::make_unique<library::LibraryService>(*impl_->track_repository);
             impl_->import_service = std::make_unique<importing::ImportService>(
                 *impl_->library_service, cfg_.plus_library_dir,
-                path_within_fs_roots, cfg_.max_upload_bytes, cfg_.plus_data_dir / "assets");
+                path_within_fs_roots, cfg_.max_upload_bytes, cfg_.plus_data_dir / "assets", protect_audio);
             impl_->library_maintenance = std::make_unique<library::LibraryMaintenance>(*impl_->library_service, cfg_.plus_data_dir / "assets");
         } catch (const std::exception& e) {
             // A corrupt/unwritable Plus store must not prevent a legacy show.
@@ -1052,7 +1065,11 @@ ControlServer::ControlServer(audio::AudioEngine& engine,
     if (!cfg_.plus_data_dir.empty()) {
         try {
             impl_->analysis_repository = std::make_unique<analysis::JsonTrackAnalysisRepository>(cfg_.plus_data_dir / "analysis" / "tracks");
-            impl_->analysis_scheduler = std::make_unique<analysis::AnalysisScheduler>(*impl_->analysis_repository, cfg_.plus_data_dir / "analysis");
+            std::vector<std::shared_ptr<analysis::AnalysisProvider>> providers;
+            if (const char* worker = std::getenv("LIVEPLAY_ANALYSIS_WORKER"); worker && *worker)
+                providers.push_back(std::make_shared<analysis::ExternalAnalysisProvider>(util::utf8_to_path(worker)));
+            impl_->analysis_scheduler = std::make_unique<analysis::AnalysisScheduler>(
+                *impl_->analysis_repository, cfg_.plus_data_dir / "analysis", std::move(providers), protect_audio);
         } catch (const std::exception& e) { Logger::error("Plus analysis unavailable: {}", e.what()); }
     }
 }
@@ -2144,10 +2161,23 @@ void ControlServer::install_routes() {
                 {"imports", impl_->import_service != nullptr},
                 {"hashAlgorithm", "sha256"}, {"analysis", impl_->analysis_scheduler ? impl_->analysis_scheduler->capabilities()
                     : json{{"basic", false}, {"loudness", false}, {"rhythm", false}, {"tonality", false}, {"structure", false}, {"semantic", false}, {"stems", false}}},
-                {"analysisAvailable", false}, {"storageError", cfg_.plus_storage_error},
+                {"analysisAvailable", impl_->analysis_scheduler && impl_->analysis_scheduler->available()}, {"storageError", cfg_.plus_storage_error},
+                {"performanceMode", impl_->performance_mode.load(std::memory_order_relaxed)},
                 {"maxBatchFiles", importing::ImportService::max_files},
                 {"maxAssetBytes", cfg_.max_upload_bytes},
                 {"maxTracks", library::JsonTrackRepository::max_tracks}});
+        });
+    CROW_ROUTE(app, "/api/plus/performance").methods(crow::HTTPMethod::Get)
+        ([this] { return json_ok(json{{"enabled", impl_->performance_mode.load(std::memory_order_relaxed)}}); });
+    CROW_ROUTE(app, "/api/plus/performance").methods(crow::HTTPMethod::Post)
+        ([this](const crow::request& req) {
+            if (req.body.size() > 4096) return json_err(413, "performance request too large");
+            try {
+                const auto body = json::parse(req.body);
+                if (!body.contains("enabled") || !body.at("enabled").is_boolean()) return json_err(400, "enabled boolean required");
+                impl_->performance_mode.store(body.at("enabled").get<bool>(), std::memory_order_relaxed);
+                return json_ok(json{{"enabled", impl_->performance_mode.load(std::memory_order_relaxed)}});
+            } catch (const json::exception& e) { return json_err(400, e.what()); }
         });
 
     CROW_ROUTE(app, "/api/plus/library/tracks").methods(crow::HTTPMethod::Get)
@@ -2256,6 +2286,16 @@ void ControlServer::install_routes() {
                 const auto batch = impl_->import_service->cancel(id);
                 return batch ? json_ok(json(*batch)) : json_err(404, "import batch not found");
             } catch (const std::exception& e) { return json_err(500, e.what()); }
+        });
+    CROW_ROUTE(app, "/api/plus/imports/<string>/retry").methods(crow::HTTPMethod::Post)
+        ([this](const std::string& id) {
+            if (!impl_->import_service) return json_err(503, "library unavailable");
+            try {
+                const auto batch = impl_->import_service->retry(id);
+                if (!batch) return json_err(404, "import batch not found");
+                auto response = json_ok(json(*batch)); response.code = 202; return response;
+            } catch (const std::invalid_argument& e) { return json_err(409, e.what()); }
+            catch (const std::exception& e) { return json_err(500, e.what()); }
         });
 
     CROW_ROUTE(app, "/api/plus/library/maintenance").methods(crow::HTTPMethod::Get)
@@ -3959,6 +3999,20 @@ void ControlServer::install_routes() {
                     {"ringFillPercent", d.ring_fill_percent},
                 });
             }
+            std::uint64_t working_set = 0, peak_working_set = 0, cpu_ms = 0;
+#if defined(_WIN32)
+            PROCESS_MEMORY_COUNTERS_EX memory{}; memory.cb = sizeof(memory);
+            if (GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&memory), sizeof(memory))) {
+                working_set = memory.WorkingSetSize; peak_working_set = memory.PeakWorkingSetSize;
+            }
+            FILETIME created{}, exited{}, kernel{}, user{};
+            if (GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user)) {
+                ULARGE_INTEGER k{}, u{}; k.LowPart=kernel.dwLowDateTime; k.HighPart=kernel.dwHighDateTime; u.LowPart=user.dwLowDateTime; u.HighPart=user.dwHighDateTime;
+                cpu_ms = (k.QuadPart + u.QuadPart) / 10000;
+            }
+#else
+            rusage usage{}; if (getrusage(RUSAGE_SELF, &usage) == 0) { peak_working_set = static_cast<std::uint64_t>(usage.ru_maxrss) * 1024; working_set = peak_working_set; cpu_ms = usage.ru_utime.tv_sec*1000ull + usage.ru_utime.tv_usec/1000 + usage.ru_stime.tv_sec*1000ull + usage.ru_stime.tv_usec/1000; }
+#endif
             return json_ok(json{
                 {"queuedFrames",       s.queued_frames},
                 {"queuedMs",           s.queued_ms},
@@ -3977,6 +4031,9 @@ void ControlServer::install_routes() {
                 {"worstSeam",          s.worst_seam},
                 {"deviceCount",        s.devices},
                 {"devices",            devices},
+                {"processWorkingSetBytes", working_set},
+                {"processPeakWorkingSetBytes", peak_working_set},
+                {"processCpuMs", cpu_ms},
             });
         });
 

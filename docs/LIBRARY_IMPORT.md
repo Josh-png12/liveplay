@@ -1,6 +1,6 @@
 # LivePlay+: biblioteca e importación inicial
 
-Estado actual: Phase 1.5 extiende el núcleo de fase 1 con Smart Library UI, almacenamiento por usuario, mantenimiento explícito e interfaces de análisis. La importación YouTube y waveform independiente siguen pendientes. No añade algoritmos de análisis musical ni modifica `.liveplay`, `ProjectState`, cues o reproducción. La base existente se conserva y extiende; no hay SQLite.
+Estado actual: Phase 1.6 extiende el núcleo de fase 1 con Smart Library UI, almacenamiento por usuario, mantenimiento explícito, persistencia durable e interfaces de análisis. La importación YouTube y waveform independiente siguen pendientes. No añade algoritmos de análisis musical ni modifica `.liveplay`, `ProjectState`, cues o reproducción. La base existente se conserva y extiende; no hay SQLite.
 
 ## Responsabilidades y reutilización
 
@@ -47,7 +47,9 @@ Cambiar tags cambia el hash: la deduplicación es de archivos idénticos, no de 
 Ubicación por defecto Windows: `%LOCALAPPDATA%/LivePlay/plus/`. macOS: `~/Library/Application Support/LivePlay/plus/`; Linux: `$XDG_DATA_HOME/LivePlay/plus/` o `~/.local/share/LivePlay/plus/`. Ya no depende del directorio del ejecutable. Override mediante `plusDataDir` en `liveplay.json` o `LIVEPLAY_PLUS_DATA_DIR` (prioridad de la variable). Se resuelven variables Unicode mediante la API wide de Windows. Cambiar el directorio requiere reiniciar el servidor.
 
 ```text
-library/catalog.json       # {schemaVersion: 1, tracks: [...]}
+library/catalog.json       # snapshot {schemaVersion: 1, lastSequence, tracks: [...]}
+library/catalog.journal.jsonl # eventos Track append-only, fsync y replay idempotente
+library/catalog.lock       # lock exclusivo de proceso durante la vida del repositorio
 library/catalog.backup.json # commit anterior (retención acotada)
 library/catalog.corrupt.*.json # copia del catálogo inválido para diagnóstico
 library/staging/            # copia temporal mientras se calcula hash
@@ -59,7 +61,15 @@ analysis/jobs.json          # jobs independientes
 analysis/tracks/            # documentos analíticos opcionales
 ```
 
-Un único worker procesa lotes y archivos secuencialmente. La copia usa bloques de 64 KiB; metadata y hashing se ejecutan fuera del hilo de audio. El registro de Track se confirma antes del resultado del trabajo. Si hay un reinicio entre ambos commits, la repetición encuentra el hash y devuelve `duplicate`. Los resultados terminados no se vuelven a procesar. Los uploads se eliminan después de guardar su resultado.
+Un único worker procesa lotes y archivos secuencialmente. La copia usa bloques de 64 KiB; metadata y hashing se ejecutan fuera del hilo de audio. El registro de Track se confirma con un evento durable antes del resultado del trabajo. Si hay un reinicio entre ambos commits, el replay/repetición encuentra el hash y devuelve `duplicate`. Los resultados terminados no se vuelven a procesar. Los uploads correctos se eliminan; staging de upload fallido/cancelado se conserva para un retry explícito del servidor.
+
+### Durabilidad, compaction y concurrencia (Phase 1.6)
+
+Cada `insert`/`update` de `JsonTrackRepository` valida el Track, adquiere el lock del repositorio, añade un evento con secuencia a `catalog.journal.jsonl`, fuerza la escritura y sólo entonces publica el estado en memoria. La compaction se agrupa con debounce de 350 ms: escribe un snapshot temporal, sincroniza, lo reemplaza atómicamente y después publica un journal vacío. Si el proceso cae antes de vaciar el journal, el replay omite secuencias ya incluidas en el snapshot; una última línea parcial sin salto de línea se descarta como write interrumpido. JSON completo malformado, schema desconocido o un registro completo inválido fallan cerrados y conservan material de diagnóstico.
+
+`catalog.lock` es exclusivo para la vida del repositorio (CreateFile sin compartir escritura en Windows; `flock` en POSIX). Otra instancia obtiene error recuperable al abrir la misma biblioteca. Imports se serializan; maintenance usa sus exclusiones existentes; compaction toma el mismo estado interno y no se ejecuta a la vez que una mutación. No existe limpieza destructiva automática.
+
+Performance Mode está activo por defecto. Cuando el servidor detecta un cue en transporte distinto de `Stopped`, el worker limita la copia a 64 KiB con una pausa breve, el scheduler no inicia proveedores y la compaction se difiere. `GET`/`POST /api/plus/performance` consulta o cambia esta política. Desactivarlo permite máximo rendimiento de biblioteca y no modifica la mezcla ni AudioEngine.
 
 Estados del lote: `queued`, `running`, `completed`, `cancelled`; un fallo de escritura del journal detiene la ingestión y se informa como `failed` en memoria. `completed` significa que todos los archivos tienen resultado, aunque algunos hayan fallado. Estados por archivo: `queued`, `imported`, `duplicate`, `failed`, `cancelled`. Cada resultado contiene `source: {path, name}`, `status`, `track_id`, `error`.
 
@@ -84,6 +94,8 @@ Se conserva la autenticación existente de operador. Al crear usuarios se requie
 | POST | `/api/plus/imports/upload` | Multipart con archivos y filename; 202 + lote |
 | GET | `/api/plus/imports/<id>` | Lote y resultados por archivo o 404 |
 | POST | `/api/plus/imports/<id>/cancel` | Solicitud de cancelación persistida o 404 |
+| POST | `/api/plus/imports/<id>/retry` | Reencola fuentes fallidas/canceladas que aún existen en staging o path; 409 si no hay ninguna |
+| GET / POST | `/api/plus/performance` | Leer/cambiar Performance Mode `{enabled:boolean}` |
 
 Phase 1.5 amplía `/api/plus/capabilities` con el objeto `analysis` (siete capacidades en false), `analysisAvailable:false` y `storageError`. El antiguo booleano `analysis` es reemplazado por el objeto solicitado; consumidores Plus de fase 1 que asumían un booleano deben usar el agregado explícito. No afecta clientes ni endpoints LivePlay anteriores.
 
@@ -150,17 +162,29 @@ Validación final Phase 1.5 (Windows, 2026-10-01):
 | Auditoría de referencia API | 137 method/path documentados, 31 schemas; WS sin cambios |
 | Benchmark 100/500/1.000 | Cero fallos; 1,298 / 11,314 / 35,603 segundos |
 
-Los builds no incluyen empaquetado/signing del instalador Electron ni validación macOS/Linux. CTest valida DSP existente; el E2E comprueba aislamiento de datos/control, no continuidad acústica bajo carga.
+Los builds no incluyen empaquetado/signing del instalador Electron ni validación macOS/Linux. CTest valida DSP existente; Phase 1.6 añade una prueba de continuidad bajo carga descrita en [AUDIO_ISOLATION_TESTS](AUDIO_ISOLATION_TESTS.md).
 
 El entorno carecía de CMake/Ninja/vcpkg y de un SDK de Windows completo. Se prepararon herramientas/SDK locales en `server/build-tools` (ignorado), sin cambios a presets, dependencias declaradas, updater o CI. Se requirió ejecutar build/E2E fuera del sandbox para permitir auxiliares y el proceso servidor local.
 
 ## Límites y siguiente trabajo
 
-- Repositorio JSON mantiene el catálogo en memoria y reescribe su contenido por Track; el benchmark confirma un cuello de botella de persistencia para fixtures pequeños. Propuesta de siguiente optimización: batching, después journal incremental/compaction o SQLite con mediciones comparables. No se implementó cambio de storage.
-- Un único proceso debe ser dueño del directorio. No hay bloqueo entre procesos ni eliminación/edición general de Tracks. La migración copia los datos legacy; se conserva un snapshot anterior del catálogo y la recuperación exige una operación explícita.
+- Repositorio JSON mantiene el catálogo en memoria. Phase 1.6 cambia reescritura por Track por journal durable y compaction coalescida; [el benchmark](LIBRARY_BENCHMARK.md) decide si SQLite sigue justificado. La interfaz TrackRepository sigue siendo el punto de sustitución.
+- Un único proceso debe ser dueño del directorio: `catalog.lock` rechaza otro escritor en vez de arriesgar corrupción. La migración copia los datos legacy; se conserva un snapshot anterior del catálogo y la recuperación exige una operación explícita.
 - Las rutas propias del catálogo nuevo son portables; referencias externas/legacy absolutas pueden requerir re-vinculación. Un duplicado normal con asset faltante sigue fallando y exige la operación explícita de relink.
 - La CLI existente construye `--fs-root` desde argv estrecho sin conversión UTF-8 explícita en Windows; una raíz Unicode falló en el E2E. Se usa raíz CLI ASCII y nombres Unicode por HTTP, que sí pasan. Corregir la CLI queda fuera de esta entrega y no se relajó la política de rutas.
 - Un cierre abrupto puede dejar staging/uploads/assets huérfanos. Existe detección/limpieza explícita de assets, sin recolección automática de staging/uploads. Atomic rename no equivale a una transacción conjunta de catálogo, asset y journal ni garantiza supervivencia ante cualquier corte eléctrico.
 - Los datos compartidos son locales al servidor, sin permisos por usuario. Debe configurarse bind/autenticación/fs-root conforme al despliegue.
-- Smart Library UI disponible desde el botón Biblioteca musical, con o sin proyecto. Incluye uploads en grupos acotados, polling cancelable, búsqueda/orden/filtros, paginación, duplicados, errores por archivo, cancelación/reintento, relink y mantenimiento/recovery explícitos. Los File del navegador no persisten al cerrar; para reintentar uploads tras reabrir se deben seleccionar otra vez. Los mensajes nuevos están en español y aún requieren integración completa en todos los locales existentes.
-- No hay YouTube, waveform de biblioteca, transcodificación ni análisis musical. Ninguna llamada de Internet/LLM participa en esta ruta. No se midió todavía continuidad acústica bajo contención ni empaquetado/instalación limpia.
+- Smart Library UI disponible desde el botón Biblioteca musical, con o sin proyecto. Incluye uploads en grupos acotados, polling cancelable, búsqueda/orden/filtros, paginación, duplicados, errores por archivo, cancelación/reintento, relink y mantenimiento/recovery explícitos. Uploads fallidos/cancelados se pueden reintentar mientras el staging del servidor exista; el navegador no puede restaurar un `File` tras cerrar la vista, por lo que debe seleccionarse de nuevo si aquel staging falta. Las cadenas nuevas están en English y Spanish.
+- No hay YouTube, waveform de biblioteca, transcodificación ni análisis musical. Ninguna llamada de Internet/LLM participa en esta ruta. La continuidad bajo contención se mide en el E2E de Phase 1.6; queda por validar con loopback físico y por empaquetar/instalar limpio.
+
+### Validación Phase 1.6 (Windows, 2026-10-01)
+
+| Comprobación | Resultado |
+|---|---|
+| Release Windows | Correcto |
+| CTest | 10/10 suites, incluido locking, journal truncado, compaction interrumpida, retry y worker externo |
+| Cliente typecheck / tests / renderer | Correctos; incluye mixer regression y Library UI |
+| E2E Plus UI/API | Correcto |
+| E2E aislamiento acústico | Correcto: 1.000 imports, 0 underruns, 0 discontinuidades, 0 callback overruns |
+| Auditoría API | 140 method/path documentados; sin cambios WebSocket |
+| Benchmark JSON | 100/500/1.000/5.000, cero fallos; ver [LIBRARY_BENCHMARK](LIBRARY_BENCHMARK.md) |

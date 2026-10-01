@@ -54,8 +54,8 @@ void JsonTrackAnalysisRepository::save(const json& record) {
     util::atomic_write_json(root_ / (record.at("track_id").get<std::string>() + ".json"), record);
 }
 AnalysisScheduler::AnalysisScheduler(TrackAnalysisRepository& repository, fs::path root,
-    std::vector<std::shared_ptr<AnalysisProvider>> providers)
-    : repository_(repository), root_(std::move(root)), providers_(std::move(providers)) {
+    std::vector<std::shared_ptr<AnalysisProvider>> providers, std::function<bool()> low_impact)
+    : repository_(repository), root_(std::move(root)), providers_(std::move(providers)), low_impact_(std::move(low_impact)) {
     const auto path = root_ / "jobs.json";
     if (fs::exists(path)) {
         const auto doc = util::read_bounded_json(path, 8ull * 1024 * 1024);
@@ -134,6 +134,10 @@ void AnalysisScheduler::run() {
             try { repository_.save(result); } catch (...) {}
         };
         try {
+            while (low_impact_ && low_impact_()) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                std::lock_guard pause_lock(mutex_); if (stopping_) return;
+            }
             const auto provider = std::find_if(providers_.begin(), providers_.end(), [&](const auto& p) { return p->id() == job.provider; });
             if (provider == providers_.end()) throw std::runtime_error("analysis provider unavailable");
             // Independent file/hash validation prevents stale worker output.

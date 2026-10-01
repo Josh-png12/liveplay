@@ -1065,6 +1065,28 @@
     "nowPlaying": "Reproduciendo ahora: {name}",
     "trackPosition": "Pista {position} de {total}"
   },
+  "plusLibrary": {
+    "title": "Biblioteca musical", "closeLabel": "Cerrar biblioteca", "close": "Cerrar",
+    "description": "Biblioteca del servidor · Los archivos importados no se añaden al proyecto.",
+    "unavailable": "Biblioteca no disponible", "backup": "Backup", "select": "Seleccionar",
+    "confirmRecovery": "Confirmo reemplazar el catálogo actual conservando todos los assets.",
+    "restoreBackup": "Restaurar backup", "emptyCatalog": "Crear catálogo vacío para reconstruir",
+    "chooseFiles": "Seleccionar archivos", "uploading": "Enviando archivos…", "dropHint": "Arrastra varios archivos aquí para importar",
+    "refresh": "Actualizar", "verify": "Verificar SHA-256", "rebuild": "Reconstruir desde assets", "performanceMode": "Modo de rendimiento",
+    "search": "Buscar", "searchPlaceholder": "Título, artista o álbum", "format": "Formato", "state": "Estado", "all": "Todos",
+    "available": "Disponible", "missing": "Faltante", "corrupt": "Integridad incorrecta", "missingAsset": "Asset faltante", "hashMismatch": "SHA-256 incorrecto",
+    "trackCount": "{count} tracks", "loading": "Cargando…", "actions": "Acciones", "duplicate": "Duplicado detectado", "relink": "Re-vincular",
+    "titleColumn": "Título", "artist": "Artista", "album": "Álbum", "duration": "Duración", "sampleRate": "Sample rate", "channels": "Canales", "size": "Tamaño",
+    "previous": "Anterior", "next": "Siguiente", "page": "Página {page} / {pages}", "imports": "Importaciones", "noImports": "No hay importaciones en esta sesión.",
+    "filesProgress": "{done}/{total} archivos", "cancel": "Cancelar pendientes", "retry": "Reintentar pendientes o fallidos",
+    "maintenance": "Mantenimiento", "maintenanceStats": "{status} · Verificados: {checked} · Faltantes: {missing} · Corruptos: {corrupt} · Recuperados: {recovered} · Eliminados: {removed}",
+    "orphans": "Assets sin referencia", "confirmCleanup": "Confirmo eliminar permanentemente solo los assets seleccionados.", "deleteSelected": "Eliminar seleccionados",
+    "analysisInfo": "Análisis musical: proveedores no instalados. La reproducción no depende del análisis.",
+    "libraryUnavailable": "La biblioteca no está disponible.", "singleRelink": "Selecciona un solo archivo para re-vincular.",
+    "invalidFile": "Formato no admitido, archivo vacío o tamaño superior al límite.",
+    "retryReselect": "El servidor ya no conserva el upload preparado; vuelve a seleccionar el archivo.",
+    "recoverySaved": "Recuperación guardada. Reinicia el servidor; los assets se conservaron."
+  },
   "workspace": {
     "barLabel": "Paneles del espacio de trabajo",
     "show": "Abrir {pane}",

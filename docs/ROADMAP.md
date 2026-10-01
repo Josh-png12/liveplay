@@ -215,4 +215,17 @@ Implementado sobre la fase 1 existente:
 - Interfaces y orquestación AnalysisScheduler/Job/Repository/Provider, schema nullable, persistencia independiente y protocolo JSON de worker futuro. Todas las capacidades musicales siguen false.
 - Benchmark de 100/500/1.000 archivos distintos y cobertura nativa/API/renderer real; resultados y limitaciones en [LIBRARY_BENCHMARK](LIBRARY_BENCHMARK.md).
 
-No se implementaron AutoDJ, beatmatching/sync, time stretching, stems, IA ni modelos pesados. SQLite no se introdujo. Próximo paquete recomendado, sujeto a una nueva instrucción: optimizar commits/journals con mediciones comparables y política durable explícita; luego completar localización y ensayos de contención audio/IO. El primer analizador real requiere antes un adaptador externo con límites/timeouts y revisión de dependencias. No se avanza automáticamente.
+No se implementaron AutoDJ, beatmatching/sync, time stretching, stems, IA ni modelos pesados. SQLite no se introdujo.
+
+## Phase 1.6 — Library Performance, Durability and Audio Isolation
+
+Implementado sobre Phase 1.5:
+
+- Journal de catálogo append-only con fsync, snapshots por reemplazo atómico, replay por secuencia e interrupciones recuperables. Las escrituras de Track son durables antes de publicarse; la compaction es coalescida y nunca sustituye un catálogo a medio escribir.
+- Exclusión entre procesos mediante `StoreLock`; imports concurrentes se serializan y mantenimiento/compaction se coordinan en el repositorio. El error de lock es explícito y la recuperación se hace reabriendo el store.
+- Performance Mode por defecto: con transporte activo reduce la cadencia de I/O de import, pausa compaction pesada y hace que el scheduler espere. Sin reproducción conserva rendimiento completo. No modifica la semántica del motor.
+- Retry servidor para staging multipart retenido y reintentos de path; los handles `File` del navegador no se persisten. La UI informa este límite y usa traducciones English/Spanish para todas las cadenas Plus nuevas.
+- Adaptador `ExternalAnalysisProvider` y worker mock externo con JSON Lines, request ID, protocol version, health, timeout, cancelación y recuperación de crash. Las capabilities musicales permanecen false.
+- Benchmark ampliado a 100/500/1.000/5.000, métricas de journal/compaction/memoria y prueba E2E de 1.000 imports bajo reproducción continua. Resultados en [LIBRARY_BENCHMARK](LIBRARY_BENCHMARK.md) y [AUDIO_ISOLATION_TESTS](AUDIO_ISOLATION_TESTS.md).
+
+La siguiente fase recomendada es un proveedor básico offline aislado que sólo emita el schema nullable ya versionado, tras una revisión de licencia/mantenimiento y un corpus Windows. No debe comenzar BPM, key, loudness, waveform, AutoDJ ni DSP de tiempo real en paralelo; cada capacidad necesita una puerta de aceptación y cache key propia.

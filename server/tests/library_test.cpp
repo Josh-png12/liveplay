@@ -2,12 +2,17 @@
 #include "liveplay/library/library_service.hpp"
 #include "liveplay/util/atomic_json.hpp"
 #include "liveplay/util/unicode_path.hpp"
+#include "liveplay/analysis/worker_adapter.hpp"
 #include <sodium.h>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <fstream>
+#include <future>
 #include <thread>
+#if defined(_WIN32)
+#include <windows.h>
+#endif
 
 namespace fs = std::filesystem;
 using namespace liveplay;
@@ -21,6 +26,17 @@ void check(bool value, const char* name) {
 template<class F> bool throws(F action) {
     try { action(); return false; } catch (const std::exception&) { return true; }
 }
+#if defined(_WIN32)
+bool process_lock_rejected(const fs::path& lock_path) {
+    auto probe = fs::current_path() / "liveplay-analysis-worker-mock.exe";
+    if (!fs::exists(probe)) probe = fs::current_path() / "server" / "build" / probe.filename();
+    std::wstring command = L"\"" + probe.wstring() + L"\" --lock-probe \"" + lock_path.wstring() + L"\"";
+    STARTUPINFOW startup{}; startup.cb = sizeof(startup); PROCESS_INFORMATION process{};
+    if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process)) return false;
+    WaitForSingleObject(process.hProcess, 5000); DWORD code = 0; GetExitCodeProcess(process.hProcess, &code);
+    CloseHandle(process.hThread); CloseHandle(process.hProcess); return code == 42;
+}
+#endif
 void wav(const fs::path& path, int amplitude) {
     std::ofstream out(path, std::ios::binary);
     const auto u16 = [&](unsigned v) { out.put(static_cast<char>(v)); out.put(static_cast<char>(v >> 8)); };
@@ -62,6 +78,10 @@ int main() {
             library::JsonTrackRepository repository(catalog);
             library::LibraryService service(repository);
             check(service.list().total == 0, "missing catalog starts empty");
+            check(throws([&] { library::JsonTrackRepository second(catalog); }), "exclusive store lock rejects a second writer");
+#if defined(_WIN32)
+            check(process_lock_rejected(root / "catalog.lock"), "exclusive store lock rejects another process");
+#endif
             const auto t = record(root, 'a');
             check(service.register_track(t).inserted, "first insert is durable");
             auto renamed = t; renamed.title = "Changed";
@@ -77,7 +97,7 @@ int main() {
             check(service.list(1, 1).tracks.size() == 1 && service.list(999).tracks.empty(), "pagination bounds");
             check(throws([&] { service.list(0, 501); }), "reject oversized page");
 #if defined(_WIN32)
-            HANDLE locked = CreateFileW(catalog.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr,
+            HANDLE locked = CreateFileW((root / "catalog.journal.jsonl").c_str(), GENERIC_READ, 0, nullptr,
                                         OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
             check(locked != INVALID_HANDLE_VALUE, "lock destination fixture");
             check(throws([&] { service.register_track(record(root, 'c')); }), "Windows locked catalog reports write failure");
@@ -90,6 +110,18 @@ int main() {
             check(repository.list(0, 100).total == 2, "repeated atomic replacement persists and reloads");
             auto invalid = record(root, 'd'); invalid.content_hash = "invalid";
             check(throws([&] { repository.insert(invalid); }), "invalid track rejected");
+        }
+        {
+            std::ofstream tail(root / "catalog.journal.jsonl", std::ios::app | std::ios::binary); tail << "{\"schemaVersion\":";
+        }
+        {
+            library::JsonTrackRepository recovered(catalog);
+            check(recovered.list(0,100).total == 2, "partial journal tail is discarded after crash");
+        }
+        std::ofstream(catalog.string() + ".tmp") << "{";
+        {
+            library::JsonTrackRepository recovered(catalog);
+            check(recovered.list(0,100).total == 2, "interrupted compaction temporary file cannot replace catalog");
         }
         util::atomic_write_json(root / "corrupt.json", nlohmann::json{{"schemaVersion", 9}, {"tracks", nlohmann::json::array()}});
         check(throws([&] { library::JsonTrackRepository bad(root / "corrupt.json"); }), "unknown schema rejected without overwrite");
@@ -127,7 +159,16 @@ int main() {
             check(throws([&] { imports.stage_upload("empty.wav", ""); }), "empty upload rejected");
             const auto staging = imports.stage_upload("too-big.wav", std::string(16, 'a'));
             auto uploaded = wait(imports, imports.submit({{util::path_to_utf8(staging), {}}}, "upload").id);
-            check(uploaded.files[0].status == "failed" && !fs::exists(staging), "failed uploaded file is cleaned");
+            check(uploaded.files[0].status == "failed" && fs::exists(staging), "failed upload staging survives for server-side retry");
+            const auto retried = imports.retry(uploaded.id);
+            check(retried && wait(imports, retried->id).files[0].status == "failed", "upload retry works after browser File handles are gone");
+            imports.discard_upload(staging);
+            std::string first_id, second_id;
+            std::thread one([&] { first_id = imports.submit({files[0]}, "server_path", "concurrent-one").id; });
+            std::thread two([&] { second_id = imports.submit({files[2]}, "server_path", "concurrent-two").id; });
+            one.join(); two.join();
+            check(wait(imports, first_id).status == "completed" && wait(imports, second_id).status == "completed",
+                  "concurrent submissions are serialized without corrupting imports");
         }
         {
             importing::ImportService denied(library, root / "denied", [](const auto&) { return false; }, 1024);
@@ -164,6 +205,28 @@ int main() {
         std::printf("FAIL unexpected exception: %s\n", error.what()); ++failures;
     }
     failures += plus_foundation_tests(root / "foundation", root / "same.wav");
+    {
+        auto mock = fs::current_path() /
+#if defined(_WIN32)
+            "liveplay-analysis-worker-mock.exe";
+#else
+            "liveplay-analysis-worker-mock";
+#endif
+        if (!fs::exists(mock)) mock = fs::current_path() / "server" / "build" / mock.filename();
+        try {
+            analysis::ExternalAnalysisProvider worker(mock, std::chrono::milliseconds(150));
+            check(worker.health_check(), "external analysis worker health check");
+            auto job = analysis::AnalysisJob{}; job.id = "job-mock"; job.track_id = "track_" + std::string(64,'a'); job.content_hash = "sha256:" + std::string(64,'a');
+            job.asset_path = "worker-malformed"; check(throws([&] { worker.execute(job); }), "malformed worker response is isolated");
+            job.asset_path = "worker-crash"; check(throws([&] { worker.execute(job); }), "worker crash is isolated and recoverable");
+            job.asset_path = "worker-timeout"; check(throws([&] { worker.execute(job); }), "blocked worker is killed on timeout");
+            job.asset_path = "worker-timeout";
+            auto cancelled = std::async(std::launch::async, [&] { return throws([&] { worker.execute(job); }); });
+            std::this_thread::sleep_for(std::chrono::milliseconds(30)); worker.cancel();
+            check(cancelled.get(), "running worker request can be cancelled");
+            job.asset_path = util::path_to_utf8(root / "same.wav"); check(worker.execute(job)["track_id"] == job.track_id, "worker restarts cleanly after failures");
+        } catch (const std::exception& e) { std::printf("FAIL worker adapter: %s\n", e.what()); ++failures; }
+    }
     // Root is a uniquely generated test directory under the build working dir.
     fs::remove_all(root);
     std::printf("library failures: %d\n", failures);

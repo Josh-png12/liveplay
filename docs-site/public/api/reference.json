@@ -5252,6 +5252,7 @@
         "maxAssetBytes": 268435456,
         "maxTracks": 10000,
         "analysisAvailable": false,
+        "performanceMode": true,
         "storageError": ""
       },
       "notes": "Independent Plus user-data store (LOCALAPPDATA/LivePlay/plus on Windows), configurable using plusDataDir or LIVEPLAY_PLUS_DATA_DIR. Never creates project items or engine cues. Uses existing operator sessions; filesystem/analysis routes reject API tokens.",
@@ -5261,6 +5262,19 @@
           "Authentication required when enabled"
         ]
       ]
+    },
+    {
+      "methods": ["GET", "POST"],
+      "path": "/api/plus/performance",
+      "title": "Read or set library performance mode",
+      "category": "LivePlay+ library",
+      "auth": "Operator",
+      "apiToken": "No",
+      "fields": [["enabled", "boolean", "POST: Yes", "-", "When true (the default), active playback throttles import I/O and defers catalog compaction."]],
+      "request": {"enabled": true},
+      "response": {"enabled": true},
+      "notes": "This only controls Plus background work. It does not change AudioEngine transport, DSP, or project semantics.",
+      "errors": [["400", "POST body lacks boolean enabled"], ["401", "Authentication required when enabled"]]
     },
     {
       "methods": [
@@ -5683,6 +5697,20 @@
           "Library disabled or invalid store"
         ]
       ],
+      "responseSchema": "PlusImportBatch"
+    },
+    {
+      "methods": ["POST"],
+      "path": "/api/plus/imports/<string>/retry",
+      "title": "Retry retained import sources",
+      "category": "LivePlay+ library",
+      "auth": "Operator",
+      "apiToken": "No",
+      "fields": [["id", "string (path)", "Yes", "-", "Completed or cancelled batch whose failed sources are still available."]],
+      "request": {},
+      "response": {"id": "batch_cccccccccccccccccccccccccccccccc", "status": "queued", "origin": "upload"},
+      "notes": "Failed and cancelled multipart staging files are retained for server-side retry. Browser File handles are not persisted; if staging is unavailable, upload a file again.",
+      "errors": [["404", "Unknown or expired batch"], ["409", "No retryable retained sources"], ["503", "Library disabled or invalid store"]],
       "responseSchema": "PlusImportBatch"
     },
     {
@@ -7985,6 +8013,13 @@
           "Response only",
           "0",
           "Accumulated journal writes in milliseconds; separate from per-file catalog persistence. The persisted counter excludes its final write."
+        ],
+        [
+          "compaction_ms",
+          "number",
+          "Response only",
+          "0",
+          "Time spent publishing a compacted catalog snapshot after a batch when performance mode permits it."
         ]
       ]
     },

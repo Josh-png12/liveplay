@@ -1,0 +1,16 @@
+{
+  "tracks": 1000,
+  "duration_ms": 23572,
+  "underruns": 0,
+  "dropouts": 0,
+  "glitches": 0,
+  "callback_overruns": 0,
+  "render_block_us_max": 2088,
+  "render_block_us_avg": 415.0837289598619,
+  "block_budget_us": 5333.333333333333,
+  "min_queued_ms": 26.666666666666668,
+  "cpu_ms": 21437,
+  "working_set_bytes": 26050560,
+  "peak_working_set_bytes": 30285824,
+  "device_count": 1
+}

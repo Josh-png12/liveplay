@@ -73,10 +73,11 @@ bool within(const fs::path& path, const fs::path& root) {
 }
 
 ImportService::ImportService(library::LibraryService& library, fs::path root,
-                             PathPolicy policy, std::uint64_t max_asset_bytes, fs::path assets)
+                             PathPolicy policy, std::uint64_t max_asset_bytes, fs::path assets,
+                             LowImpactPolicy low_impact)
     : library_(library), root_(fs::absolute(std::move(root))),
       assets_(assets.empty() ? root_ / "assets" : fs::absolute(assets)),
-      policy_(std::move(policy)), max_asset_bytes_(max_asset_bytes) {
+      policy_(std::move(policy)), low_impact_(std::move(low_impact)), max_asset_bytes_(max_asset_bytes) {
     if (sodium_init() < 0) throw std::runtime_error("libsodium initialization failed");
     fs::create_directories(assets_);
     fs::create_directories(root_ / "staging");
@@ -209,6 +210,18 @@ std::optional<ImportBatch> ImportService::cancel(const std::string& id) {
     }
     return next;
 }
+std::optional<ImportBatch> ImportService::retry(const std::string& id) {
+    std::vector<ImportFile> files; std::string origin, relink;
+    {
+        std::lock_guard lock(mutex_); const auto it = batches_.find(id); if (it == batches_.end()) return std::nullopt;
+        if (!terminal(it->second)) throw std::invalid_argument("only terminal imports can be retried");
+        origin = it->second.origin; relink = it->second.relink_track_id;
+        for (const auto& result : it->second.files)
+            if ((result.status == "failed" || result.status == "cancelled") && fs::is_regular_file(util::utf8_to_path(result.source.path))) files.push_back(result.source);
+    }
+    if (files.empty()) throw std::invalid_argument("no retained source files are available for retry");
+    return submit(std::move(files), origin, "", relink);
+}
 bool ImportService::interrupted(const std::string& id) const {
     std::lock_guard lock(mutex_);
     return stopping_ || batches_.at(id).cancel_requested;
@@ -272,6 +285,7 @@ library::TrackInsert ImportService::import_one(const ImportFile& file, const std
             std::array<char, 64 * 1024> buffer{};
             while (in) {
                 if (interrupted(batch_id)) throw std::runtime_error("import interrupted");
+                if (low_impact_ && low_impact_()) std::this_thread::sleep_for(std::chrono::milliseconds(1));
                 auto stamp = Clock::now();
                 in.read(buffer.data(), buffer.size());
                 const auto count = in.gcount();
@@ -384,7 +398,6 @@ void ImportService::run() {
             for (std::size_t i = 0; i < count; ++i) {
                 ImportResult result;
                 bool cancelled = false;
-                std::vector<fs::path> cancelled_uploads;
                 {
                     std::lock_guard lock(mutex_);
                     if (stopping_) break;
@@ -393,7 +406,6 @@ void ImportService::run() {
                         for (auto& pending : next.files) {
                             if (pending.status != "queued") continue;
                             pending.status = "cancelled";
-                            if (origin == "upload") cancelled_uploads.push_back(util::utf8_to_path(pending.source.path));
                         }
                         next.journal_ms += persist(next);
                         batches_.at(id) = next;
@@ -403,7 +415,8 @@ void ImportService::run() {
                     if (!cancelled && result.status != "queued") continue;
                 }
                 if (cancelled) {
-                    for (const auto& path : cancelled_uploads) discard_upload(path);
+                    // Retain cancelled upload bytes so a restored UI can retry
+                    // without pretending browser File handles are durable.
                     break;
                 }
                 try {
@@ -424,15 +437,28 @@ void ImportService::run() {
                         result.error.clear();
                     }
                     next.files[i] = result;
-                    next.journal_ms += persist(next);
+                    // Track mutations are already durable in the repository's
+                    // append-only journal. Coalesce progress snapshots; after a
+                    // crash, uncheckpointed entries replay safely as duplicates.
+                    if ((i + 1) % 32 == 0 || i + 1 == count)
+                        next.journal_ms += persist(next);
                     batches_.at(id) = next;
                 }
-                if (origin == "upload") discard_upload(util::utf8_to_path(result.source.path));
+                if (origin == "upload" && (result.status == "imported" || result.status == "duplicate"))
+                    discard_upload(util::utf8_to_path(result.source.path));
             }
             {
                 std::lock_guard lock(mutex_);
                 auto next = batches_.at(id);
                 next.status = stopping_ ? "queued" : next.cancel_requested ? "cancelled" : "completed";
+                // In performance mode an active cue defers the heavier snapshot.
+                // The append-only Track journal is still durable and replayable.
+                if (!stopping_ && (!low_impact_ || !low_impact_())) {
+                    const auto compact_start = std::chrono::steady_clock::now();
+                    library_.checkpoint();
+                    next.compaction_ms += std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - compact_start).count();
+                }
                 next.journal_ms += persist(next);
                 batches_.at(id) = next;
             }

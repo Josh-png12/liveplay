@@ -169,9 +169,11 @@ add_executable(liveplay-server
     # LivePlay+ library: independent from project state and real-time rendering.
     src/library/data_directory.cpp
         src/library/maintenance.cpp
-        src/analysis/analysis.cpp
+    src/analysis/analysis.cpp
+        src/analysis/worker_adapter.cpp
         src/library/atomic_json.cpp
     src/library/track_repository.cpp
+    src/library/store_lock.cpp
     src/library/library_service.cpp
     src/import/import_service.cpp
 )
@@ -207,7 +209,7 @@ elseif(TARGET unofficial::taglib::tag)
 endif()
 
 if(WIN32)
-    target_link_libraries(liveplay-server PRIVATE ws2_32 mswsock dbghelp mpr)
+    target_link_libraries(liveplay-server PRIVATE ws2_32 mswsock dbghelp mpr psapi)
     # Modern Windows console: opt in to UTF-8 + VT for the banner.
     target_compile_definitions(liveplay-server PRIVATE UNICODE _UNICODE)
 endif()
@@ -332,8 +334,10 @@ if(LIVEPLAY_BUILD_TESTS)
         src/library/data_directory.cpp
         src/library/maintenance.cpp
         src/analysis/analysis.cpp
+        src/analysis/worker_adapter.cpp
         src/library/atomic_json.cpp
         src/library/track_repository.cpp
+        src/library/store_lock.cpp
         src/library/library_service.cpp
         src/import/import_service.cpp
         src/meta/metadata.cpp
@@ -359,8 +363,10 @@ if(LIVEPLAY_BUILD_TESTS)
         src/library/data_directory.cpp
         src/library/maintenance.cpp
         src/analysis/analysis.cpp
+        src/analysis/worker_adapter.cpp
         src/library/atomic_json.cpp
         src/library/track_repository.cpp
+        src/library/store_lock.cpp
         src/library/library_service.cpp
         src/import/import_service.cpp
         src/meta/metadata.cpp
@@ -369,6 +375,9 @@ if(LIVEPLAY_BUILD_TESTS)
     target_include_directories(liveplay-library-benchmark PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_link_libraries(liveplay-library-benchmark PRIVATE
         nlohmann_json::nlohmann_json liveplay_miniaudio Threads::Threads)
+    if(WIN32)
+        target_link_libraries(liveplay-library-benchmark PRIVATE psapi)
+    endif()
     if(TARGET unofficial-sodium::sodium)
         target_link_libraries(liveplay-library-benchmark PRIVATE unofficial-sodium::sodium)
     elseif(TARGET sodium)
@@ -382,6 +391,9 @@ if(LIVEPLAY_BUILD_TESTS)
         target_link_libraries(liveplay-library-benchmark PRIVATE unofficial::taglib::tag)
     endif()
     add_test(NAME library COMMAND liveplay-library-tests)
+    add_executable(liveplay-analysis-worker-mock tests/analysis_worker_mock.cpp src/library/store_lock.cpp)
+    target_include_directories(liveplay-analysis-worker-mock PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(liveplay-analysis-worker-mock PRIVATE nlohmann_json::nlohmann_json)
 endif()
 
 # ---------------------------------------------------------------------------

@@ -14,6 +14,7 @@ public:
     std::optional<Track> find_by_hash(const std::string& hash) const;
     TrackInsert register_track(const Track& track);
     void update_asset(const Track& track) { repository_.update_asset(track); }
+    void checkpoint() { repository_.checkpoint(); }
     std::mutex& asset_mutex() { return asset_mutex_; }
 private:
     TrackRepository& repository_;

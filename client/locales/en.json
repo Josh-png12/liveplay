@@ -1065,6 +1065,28 @@
     "nowPlaying": "Now playing: {name}",
     "trackPosition": "Track {position} of {total}"
   },
+  "plusLibrary": {
+    "title": "Music library", "closeLabel": "Close library", "close": "Close",
+    "description": "Server library · Imported files are not added to the project.",
+    "unavailable": "Library unavailable", "backup": "Backup", "select": "Select",
+    "confirmRecovery": "I confirm replacing the current catalog while preserving all assets.",
+    "restoreBackup": "Restore backup", "emptyCatalog": "Create empty catalog for rebuild",
+    "chooseFiles": "Choose files", "uploading": "Uploading files…", "dropHint": "Drop multiple files here to import",
+    "refresh": "Refresh", "verify": "Verify SHA-256", "rebuild": "Rebuild from assets", "performanceMode": "Performance Mode",
+    "search": "Search", "searchPlaceholder": "Title, artist or album", "format": "Format", "state": "State", "all": "All",
+    "available": "Available", "missing": "Missing", "corrupt": "Integrity error", "missingAsset": "Missing asset", "hashMismatch": "SHA-256 mismatch",
+    "trackCount": "{count} tracks", "loading": "Loading…", "actions": "Actions", "duplicate": "Duplicate detected", "relink": "Relink",
+    "titleColumn": "Title", "artist": "Artist", "album": "Album", "duration": "Duration", "sampleRate": "Sample rate", "channels": "Channels", "size": "Size",
+    "previous": "Previous", "next": "Next", "page": "Page {page} / {pages}", "imports": "Imports", "noImports": "No imports in this session.",
+    "filesProgress": "{done}/{total} files", "cancel": "Cancel pending", "retry": "Retry pending or failed",
+    "maintenance": "Maintenance", "maintenanceStats": "{status} · Checked: {checked} · Missing: {missing} · Corrupt: {corrupt} · Recovered: {recovered} · Removed: {removed}",
+    "orphans": "Unreferenced assets", "confirmCleanup": "I confirm permanently deleting only the selected assets.", "deleteSelected": "Delete selected",
+    "analysisInfo": "Music analysis: no providers installed. Playback does not depend on analysis.",
+    "libraryUnavailable": "The library is unavailable.", "singleRelink": "Choose one file to relink.",
+    "invalidFile": "Unsupported format, empty file, or file exceeds the size limit.",
+    "retryReselect": "The server no longer has the staged upload; choose the file again.",
+    "recoverySaved": "Recovery saved. Restart the server; assets were preserved."
+  },
   "workspace": {
     "barLabel": "Workspace panes",
     "show": "Open {pane}",

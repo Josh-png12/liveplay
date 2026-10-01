@@ -50,7 +50,7 @@
 
     <!-- Normal mode -->
     <template v-else>
-      <button class="plus-library-launch" @click="showPlusLibrary = true">Biblioteca musical</button>
+      <button class="plus-library-launch" @click="showPlusLibrary = true">{{ t('plusLibrary.title') }}</button>
       <LibraryPanel v-if="showPlusLibrary" @close="showPlusLibrary = false" />
       <WelcomeScreen v-if="!currentProject" />
       <MainWorkspace v-else />

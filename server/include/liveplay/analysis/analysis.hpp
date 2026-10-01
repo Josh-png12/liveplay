@@ -3,6 +3,7 @@
 #include <condition_variable>
 #include <deque>
 #include <thread>
+#include <functional>
 namespace liveplay::analysis {
 using json = nlohmann::json;
 json empty_analysis(const std::string& track_id);
@@ -42,16 +43,19 @@ public:
 class AnalysisScheduler {
 public:
     AnalysisScheduler(TrackAnalysisRepository& repository, std::filesystem::path root,
-        std::vector<std::shared_ptr<AnalysisProvider>> providers = {});
+        std::vector<std::shared_ptr<AnalysisProvider>> providers = {},
+        std::function<bool()> low_impact = {});
     ~AnalysisScheduler();
     AnalysisJob enqueue(const library::Track& track, const std::string& provider);
     json jobs() const;
     json capabilities() const;
+    bool available() const { return !providers_.empty(); }
     void stop();
 private:
     TrackAnalysisRepository& repository_;
     std::filesystem::path root_;
     std::vector<std::shared_ptr<AnalysisProvider>> providers_;
+    std::function<bool()> low_impact_;
     mutable std::mutex mutex_;
     std::condition_variable cv_;
     std::map<std::string, AnalysisJob> jobs_;

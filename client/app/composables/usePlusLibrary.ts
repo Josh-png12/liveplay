@@ -2,6 +2,7 @@ import { ref, onBeforeUnmount } from 'vue';
 import type { PlusTrack, PlusBatch } from '~/types/plus';
 export function usePlusLibrary() {
   const server = useLiveplayServer();
+  const { t } = useLocalization();
   const tracks = ref<PlusTrack[]>([]), batches = ref<PlusBatch[]>([]);
   const capabilities = ref<any>(null), error = ref(''), uploading = ref(false), loading = ref(false);
   const maintenance = ref<any>(null), recovery = ref<any>(null);
@@ -68,14 +69,14 @@ export function usePlusLibrary() {
     if (uploading.value) return;
     uploading.value = true; error.value = ''; localFailures.value = [];
     try {
-      if (!capabilities.value?.library) throw new Error('La biblioteca no está disponible.');
-      if (relinkTrackId && files.length !== 1) throw new Error('Selecciona un solo archivo para re-vincular.');
+      if (!capabilities.value?.library) throw new Error(t('plusLibrary.libraryUnavailable'));
+      if (relinkTrackId && files.length !== 1) throw new Error(t('plusLibrary.singleRelink'));
       const limit = capabilities.value.maxAssetBytes || 256 * 1024 * 1024;
       // Bound multipart bodies including header overhead; requests yield to the UI.
       const groups: File[][] = []; let group: File[] = [], bytes = 0;
       for (const file of files) {
         if (!/\.(wav|mp3|flac|ogg|m4a|aac|aif|aiff|opus|wma)$/i.test(file.name) || file.size === 0 || file.size + 4096 > limit) {
-          localFailures.value.push({name: file.name, error: 'Formato no admitido, archivo vacío o tamaño superior al límite.'}); continue;
+          localFailures.value.push({name: file.name, error: t('plusLibrary.invalidFile')}); continue;
         }
         if (group.length >= 100 || bytes + file.size + 4096 > limit) { groups.push(group); group = []; bytes = 0; }
         group.push(file); bytes += file.size + 4096;
@@ -101,9 +102,12 @@ export function usePlusLibrary() {
       if (batch.origin === 'server_path') {
         const next = await post('/imports', { files: failed.map(x => x.file.source.path), relinkTrackId: batch.relink_track_id || '' }); batches.value.push(next); remember();
       } else {
-        const files = uploads.get(batch.id);
-        if (!files) throw new Error('Vuelve a seleccionar los archivos: el navegador no conserva su contenido tras cerrar la vista.');
-        await importFiles(failed.map(x => files[x.index]), batch.relink_track_id || '');
+        try { const next: any = await post(`/imports/${batch.id}/retry`, {}); batches.value.push(next); remember(); }
+        catch {
+          const files = uploads.get(batch.id);
+          if (!files) throw new Error(t('plusLibrary.retryReselect'));
+          await importFiles(failed.map(x => files[x.index]), batch.relink_track_id || '');
+        }
       }
     } catch (e) { error.value = String(e); }
   }
@@ -112,9 +116,13 @@ export function usePlusLibrary() {
     catch (e) { error.value = String(e); }
   }
   async function recover(action: string, backup = '') {
-    try { await post('/library/recovery', { action, backup, confirm: true }); error.value = 'Recuperación guardada. Reinicia el servidor; los assets se conservaron.'; }
+    try { await post('/library/recovery', { action, backup, confirm: true }); error.value = t('plusLibrary.recoverySaved'); }
+    catch (e) { error.value = String(e); }
+  }
+  async function setPerformance(enabled: boolean) {
+    try { const value: any = await post('/performance', { enabled }); if (capabilities.value) capabilities.value.performanceMode = value.enabled; }
     catch (e) { error.value = String(e); }
   }
   onBeforeUnmount(() => { disposed = true; clearTimeout(timer); for (const c of controllers) c.abort(); });
-  return { tracks, batches, capabilities, error, uploading, loading, maintenance, recovery, localFailures, initialize, refresh, importFiles, cancel, retry, maintain, recover };
+  return { tracks, batches, capabilities, error, uploading, loading, maintenance, recovery, localFailures, initialize, refresh, importFiles, cancel, retry, maintain, recover, setPerformance };
 }

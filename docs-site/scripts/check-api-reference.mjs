@@ -53,8 +53,9 @@ const commands = new Set([...dispatch.matchAll(/\btype\s*==\s*"([^"]+)"/g)].map(
 const events = new Set();
 const patches = new Set();
 for (const [path, content] of sourceFiles) {
-  // Discovery emits a UDP beacon, not a WebSocket frame.
-  if (path === 'server/src/net/discovery.cpp') continue;
+  // Discovery and the analysis worker protocol intentionally use a similar
+  // {type: ...} envelope, but neither is a WebSocket frame.
+  if (path === 'server/src/net/discovery.cpp' || path.startsWith('server/src/analysis/') || path === 'server/src/library/track_repository.cpp') continue;
   for (const match of content.matchAll(/\{\s*"type"\s*,\s*"([^"]+)"/g)) events.add(match[1]);
   // These are the current frame-building variables; schema entry.type is HTTP metadata.
   for (const match of content.matchAll(/\b(?:payload|evt|patch)\s*\["type"\]\s*=\s*"([^"]+)"/g)) events.add(match[1]);
