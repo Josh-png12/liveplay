@@ -11,12 +11,18 @@
 #include <unistd.h>
 #endif
 namespace liveplay::analysis {
-ExternalAnalysisProvider::ExternalAnalysisProvider(std::filesystem::path executable, std::chrono::milliseconds timeout)
-    : executable_(std::move(executable)), timeout_(timeout) {
+ExternalAnalysisProvider::ExternalAnalysisProvider(std::filesystem::path executable, std::chrono::milliseconds timeout,
+                                                   std::string provider_id, json capabilities)
+    : executable_(std::move(executable)), timeout_(timeout), provider_id_(std::move(provider_id)), capabilities_(std::move(capabilities)) {
     if (executable_.empty()) throw std::invalid_argument("analysis worker executable is empty");
+    if (provider_id_.empty()) throw std::invalid_argument("analysis provider ID is empty");
 }
 ExternalAnalysisProvider::~ExternalAnalysisProvider() { cancel(); }
-json ExternalAnalysisProvider::capabilities() const { return {{"basic",false},{"loudness",false},{"rhythm",false},{"tonality",false},{"structure",false},{"semantic",false},{"stems",false}}; }
+json ExternalAnalysisProvider::capabilities() const {
+    json result = {{"basic",false},{"loudness",false},{"rhythm",false},{"tonality",false},{"structure",false},{"semantic",false},{"stems",false}};
+    for (const auto& [key, value] : capabilities_.items()) if (result.contains(key) && value.is_boolean()) result[key] = value;
+    return result;
+}
 void ExternalAnalysisProvider::cancel() noexcept {
     cancel_requested_.store(true, std::memory_order_release);
     std::lock_guard lock(process_mutex_);

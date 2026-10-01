@@ -10,9 +10,11 @@ namespace liveplay::analysis {
 class ExternalAnalysisProvider final : public AnalysisProvider {
 public:
     ExternalAnalysisProvider(std::filesystem::path executable,
-                             std::chrono::milliseconds timeout = std::chrono::seconds(30));
+                             std::chrono::milliseconds timeout = std::chrono::seconds(30),
+                             std::string provider_id = "external",
+                             json capabilities = {});
     ~ExternalAnalysisProvider() override;
-    std::string id() const override { return "external"; }
+    std::string id() const override { return provider_id_; }
     json capabilities() const override;
     json execute(const AnalysisJob& job) override;
     bool health_check();
@@ -20,6 +22,8 @@ public:
 private:
     std::filesystem::path executable_;
     std::chrono::milliseconds timeout_;
+    std::string provider_id_;
+    json capabilities_;
     std::atomic<bool> cancel_requested_{false};
     std::mutex process_mutex_;
 #if defined(_WIN32)

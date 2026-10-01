@@ -14,3 +14,7 @@ The health response is `{"protocolVersion":1,"type":"healthy","requestId":"healt
 The default timeout is 30 seconds. Cancellation, timeout, invalid output and unexpected exit terminate the process and mark only the analysis job failed; Track metadata, assets, project playback and AudioEngine continue. The scheduler waits during active playback when Performance Mode is enabled. A future Python worker must retain this contract, add provider/model/configuration provenance to its result/cache key, and pass licensing, Windows packaging and resource-budget review before it advertises any capability.
 
 `liveplay-analysis-worker-mock` is a test fixture. It supports health, an empty successful result, malformed output, deliberate crash and timeout paths. It does not analyze audio.
+
+## `ffmpeg-basic` provider
+
+The Event MVP adds an optional `liveplay-ffmpeg-analysis-worker` target using the same JSON Lines envelope. It reports only nullable duration, peak/RMS, integrated loudness and true peak fields plus bounded `recommended_gain_db`. The server discovers it beside the server executable or through `LIVEPLAY_FFMPEG_ANALYSIS_WORKER`; FFmpeg is selected with `LIVEPLAY_FFMPEG` or `PATH`. Missing FFmpeg, malformed output, timeout and worker exit fail only that analysis job. Installers must package the worker and a license-compliant FFmpeg build before enabling `LIVEPLAY_PLUS_BASIC_ANALYSIS`.

@@ -1087,6 +1087,9 @@
     "retryReselect": "The server no longer has the staged upload; choose the file again.",
     "recoverySaved": "Recovery saved. Restart the server; assets were preserved."
   },
+  "eventMvp": {
+    "title": "Event MVP", "description": "Sports show control using the existing library and cues.", "close": "Close", "refresh": "Refresh", "template": "Create sports template", "search": "Search library", "unknownArtist": "Unknown artist", "openProject": "Open a project to create cues.", "selectTrack": "Select a track to edit its cue.", "zoom": "Zoom", "createCue": "Create cue", "preview": "Open cue", "play": "Play", "stop": "Stop", "presets": "Cue presets", "presetEntry": "Sports Entry", "presetExit": "Sports Exit", "presetBackground": "Background", "presetAwards": "Awards", "tags": "Manual tags", "energy": "Energy", "role": "Event role", "approved": "School approved", "saveTags": "Save tags", "showBoard": "Show Board", "speechOn": "Speech Mode", "speechOff": "Speech Mode off", "stopAll": "Stop All", "fadeAll": "Fade All", "next": "Next", "assignEntry": "Assign entry", "assignExit": "Assign exit", "entry": "Entry", "exit": "Exit", "playing": "Playing", "ready": "Ready"
+  },
   "workspace": {
     "barLabel": "Workspace panes",
     "show": "Open {pane}",

@@ -177,6 +177,10 @@ El entorno carecía de CMake/Ninja/vcpkg y de un SDK de Windows completo. Se pre
 - Smart Library UI disponible desde el botón Biblioteca musical, con o sin proyecto. Incluye uploads en grupos acotados, polling cancelable, búsqueda/orden/filtros, paginación, duplicados, errores por archivo, cancelación/reintento, relink y mantenimiento/recovery explícitos. Uploads fallidos/cancelados se pueden reintentar mientras el staging del servidor exista; el navegador no puede restaurar un `File` tras cerrar la vista, por lo que debe seleccionarse de nuevo si aquel staging falta. Las cadenas nuevas están en English y Spanish.
 - No hay YouTube, waveform de biblioteca, transcodificación ni análisis musical. Ninguna llamada de Internet/LLM participa en esta ruta. La continuidad bajo contención se mide en el E2E de Phase 1.6; queda por validar con loopback físico y por empaquetar/instalar limpio.
 
+## Event MVP extensions
+
+Library tracks can carry manual event metadata (`energy`, `language`, `country`, `genre`, `event_roles`, `school_approved`) through `PATCH /api/plus/library/tracks/<id>/tags`. `GET`/`POST /api/plus/library/tracks/<id>/waveform` reads or queues a cached waveform; extraction is independent from project cues. `POST /api/plus/recommendations` returns stable rule-based ordering and never schedules playback. These routes do not alter `.liveplay` or `ProjectState`.
+
 ### Validación Phase 1.6 (Windows, 2026-10-01)
 
 | Comprobación | Resultado |
@@ -186,5 +190,5 @@ El entorno carecía de CMake/Ninja/vcpkg y de un SDK de Windows completo. Se pre
 | Cliente typecheck / tests / renderer | Correctos; incluye mixer regression y Library UI |
 | E2E Plus UI/API | Correcto |
 | E2E aislamiento acústico | Correcto: 1.000 imports, 0 underruns, 0 discontinuidades, 0 callback overruns |
-| Auditoría API | 140 method/path documentados; sin cambios WebSocket |
+| Auditoría API | 144 method/path documentados; sin cambios WebSocket |
 | Benchmark JSON | 100/500/1.000/5.000, cero fallos; ver [LIBRARY_BENCHMARK](LIBRARY_BENCHMARK.md) |

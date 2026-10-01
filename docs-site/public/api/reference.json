@@ -5253,7 +5253,16 @@
         "maxTracks": 10000,
         "analysisAvailable": false,
         "performanceMode": true,
-        "storageError": ""
+        "storageError": "",
+        "plus": {
+          "eventMvp": true,
+          "waveform": true,
+          "basicAnalysis": false,
+          "showBoard": true,
+          "trackGain": true,
+          "basicTransitions": true,
+          "ruleRecommendations": true
+        }
       },
       "notes": "Independent Plus user-data store (LOCALAPPDATA/LivePlay/plus on Windows), configurable using plusDataDir or LIVEPLAY_PLUS_DATA_DIR. Never creates project items or engine cues. Uses existing operator sessions; filesystem/analysis routes reject API tokens.",
       "errors": [
@@ -5400,6 +5409,46 @@
         ]
       ],
       "responseSchema": "PlusTrack"
+    },
+    {
+      "methods": ["GET", "POST"],
+      "path": "/api/plus/library/tracks/<string>/waveform",
+      "title": "Read or queue a cached library waveform",
+      "category": "LivePlay+ library",
+      "auth": "Operator",
+      "apiToken": "No",
+      "fields": [["id", "string (path)", "Yes", "-", "Library track identity."]],
+      "request": null,
+      "response": {"track_id": "track_...", "status": "queued", "channels": []},
+      "notes": "Waveform extraction runs on a background worker and is cached independently of AudioEngine. POST is idempotent and returns the current status.",
+      "errors": [["401", "Authentication required when enabled"], ["404", "Track not found"], ["503", "Library disabled or invalid store"]]
+    },
+    {
+      "methods": ["PATCH"],
+      "path": "/api/plus/library/tracks/<string>/tags",
+      "title": "Update manual event tags for a library track",
+      "category": "LivePlay+ library",
+      "auth": "Operator",
+      "apiToken": "No",
+      "fields": [["tags", "object", "Yes", "{}", "energy, language, country, genre, event_roles and school_approved."]],
+      "request": {"energy": 3, "event_roles": ["walkout"], "school_approved": true},
+      "response": {"id": "track_...", "tags": {"energy": 3, "event_roles": ["walkout"], "school_approved": true}},
+      "responseSchema": "PlusTrack",
+      "notes": "Metadata-only operation; it never creates project items or playback cues.",
+      "errors": [["400", "Invalid tag values"], ["401", "Authentication required when enabled"], ["404", "Track not found"]]
+    },
+    {
+      "methods": ["POST"],
+      "path": "/api/plus/recommendations",
+      "title": "Get deterministic event recommendations",
+      "category": "LivePlay+ event",
+      "auth": "Operator",
+      "apiToken": "No",
+      "fields": [["eventRole", "string", "No", "", "Manual event role tag."], ["energy", "integer", "No", "0", "Preferred energy 0..5."], ["limit", "integer", "No", "20", "Maximum results 1..100."]],
+      "request": {"eventRole": "walkout", "energy": 3, "schoolApproved": true, "limit": 10},
+      "response": {"provider": "rules-v1", "tracks": []},
+      "notes": "Stable rule-based ordering over library metadata. No network, LLM or playback work is involved.",
+      "errors": [["400", "Invalid recommendation request"], ["401", "Authentication required when enabled"], ["503", "Library disabled or invalid store"]]
     },
     {
       "methods": [
@@ -7944,6 +7993,13 @@
           "Response only",
           "available",
           "available, missing or corrupt; metadata is preserved. Missing is also checked on reads."
+        ],
+        [
+          "tags",
+          "object",
+          "Response and PATCH",
+          "{}",
+          "Manual event metadata: energy 0..5, language, country, genre, event_roles and school_approved."
         ]
       ]
     },

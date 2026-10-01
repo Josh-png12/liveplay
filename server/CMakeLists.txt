@@ -168,7 +168,9 @@ add_executable(liveplay-server
 
     # LivePlay+ library: independent from project state and real-time rendering.
     src/library/data_directory.cpp
-        src/library/maintenance.cpp
+    src/library/maintenance.cpp
+    src/library/waveform_service.cpp
+    src/library/recommendations.cpp
     src/analysis/analysis.cpp
         src/analysis/worker_adapter.cpp
         src/library/atomic_json.cpp
@@ -176,6 +178,7 @@ add_executable(liveplay-server
     src/library/store_lock.cpp
     src/library/library_service.cpp
     src/import/import_service.cpp
+    src/show/transition_engine.cpp
 )
 
 target_include_directories(liveplay-server
@@ -394,6 +397,8 @@ if(LIVEPLAY_BUILD_TESTS)
     add_executable(liveplay-analysis-worker-mock tests/analysis_worker_mock.cpp src/library/store_lock.cpp)
     target_include_directories(liveplay-analysis-worker-mock PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_link_libraries(liveplay-analysis-worker-mock PRIVATE nlohmann_json::nlohmann_json)
+    add_executable(liveplay-ffmpeg-analysis-worker tests/ffmpeg_basic_analysis_worker.cpp)
+    target_link_libraries(liveplay-ffmpeg-analysis-worker PRIVATE nlohmann_json::nlohmann_json)
 endif()
 
 # ---------------------------------------------------------------------------

@@ -229,3 +229,7 @@ Implementado sobre Phase 1.5:
 - Benchmark ampliado a 100/500/1.000/5.000, métricas de journal/compaction/memoria y prueba E2E de 1.000 imports bajo reproducción continua. Resultados en [LIBRARY_BENCHMARK](LIBRARY_BENCHMARK.md) y [AUDIO_ISOLATION_TESTS](AUDIO_ISOLATION_TESTS.md).
 
 La siguiente fase recomendada es un proveedor básico offline aislado que sólo emita el schema nullable ya versionado, tras una revisión de licencia/mantenimiento y un corpus Windows. No debe comenzar BPM, key, loudness, waveform, AutoDJ ni DSP de tiempo real en paralelo; cada capacidad necesita una puerta de aceptación y cache key propia.
+
+## Phase 1.7 — Event MVP
+
+Implemented as a narrow vertical slice: cached waveform requests, manual event tags, deterministic recommendations, optional FFmpeg basic loudness/peak analysis, cue editor with IN/OUT, presets, show-board phase groups, team/template scaffolding and emergency transport controls. It reuses the existing project item and audio engine contracts. BPM, key, beatgrid, AutoDJ planning, time stretching, stems, CLAP and AI remain explicitly deferred to Phase 2+.

@@ -20,6 +20,11 @@ void validate(const Track& t) {
         (t.import_origin != "server_path" && t.import_origin != "upload") ||
         (t.status != "available" && t.status != "missing" && t.status != "corrupt"))
         throw std::invalid_argument("invalid track record");
+    if (t.tags.energy < 0 || t.tags.energy > 5 || t.tags.language.size() > 64 ||
+        t.tags.country.size() > 64 || t.tags.genre.size() > 64 || t.tags.event_roles.size() > 16)
+        throw std::invalid_argument("invalid track tags");
+    for (const auto& role : t.tags.event_roles)
+        if (role.empty() || role.size() > 64) throw std::invalid_argument("invalid event role");
 }
 bool portable_child(const fs::path& relative) { return !relative.empty() && relative.is_relative() && *relative.begin() != ".."; }
 }
@@ -114,6 +119,13 @@ TrackInsert JsonTrackRepository::insert(const Track& track) {
 void JsonTrackRepository::update_asset(const Track& track) {
     validate(track); std::lock_guard lock(mutex_); const auto old = tracks_.find(track.id);
     if (old == tracks_.end() || old->second.content_hash != track.content_hash) throw std::invalid_argument("asset update cannot change identity");
+    append_upsert(track); old->second = track;
+}
+void JsonTrackRepository::update_metadata(const Track& track) {
+    validate(track); std::lock_guard lock(mutex_); const auto old = tracks_.find(track.id);
+    if (old == tracks_.end() || old->second.content_hash != track.content_hash ||
+        old->second.asset_path != track.asset_path)
+        throw std::invalid_argument("metadata update cannot change track identity or asset");
     append_upsert(track); old->second = track;
 }
 void JsonTrackRepository::compact_locked() {

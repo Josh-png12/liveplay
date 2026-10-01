@@ -33,6 +33,8 @@ public:
     virtual std::optional<Track> find_by_hash(const std::string& hash) const = 0;
     virtual TrackInsert insert(const Track& track) = 0;
     virtual void update_asset(const Track& track) = 0;
+    // Metadata edits keep Track identity and content integrity immutable.
+    virtual void update_metadata(const Track& track) { update_asset(track); }
     // Flushes a replaceable repository's compact representation. Mutations are
     // already durable when their methods return; this is a maintenance hint.
     virtual void checkpoint() {}
@@ -51,6 +53,7 @@ public:
     std::optional<Track> find_by_hash(const std::string& hash) const override;
     TrackInsert insert(const Track& track) override;
     void update_asset(const Track& track) override;
+    void update_metadata(const Track& track) override;
     void checkpoint() override;
     std::uintmax_t journal_bytes() const;
 private:

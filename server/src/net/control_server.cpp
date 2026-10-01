@@ -24,6 +24,9 @@
 #include "liveplay/library/library_service.hpp"
 #include "liveplay/library/data_directory.hpp"
 #include "liveplay/library/maintenance.hpp"
+#include "liveplay/library/waveform_service.hpp"
+#include "liveplay/library/recommendations.hpp"
+#include "liveplay/show/transition_engine.hpp"
 #include "liveplay/analysis/analysis.hpp"
 #include "liveplay/analysis/worker_adapter.hpp"
 #include "liveplay/util/atomic_json.hpp"
@@ -45,6 +48,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <charconv>
 #include <condition_variable>
 #include <cstdlib>
@@ -72,6 +76,13 @@ namespace audio = liveplay::audio;
 namespace core  = liveplay::core;
 
 namespace liveplay::net {
+
+static bool plus_feature_enabled(const char* name, bool fallback) {
+    const char* value = std::getenv(name);
+    if (!value) return fallback;
+    const std::string v(value);
+    return !(v == "0" || v == "false" || v == "off" || v == "no");
+}
 
 // Forward declarations (definitions further down).
 static nlohmann::json build_playback_snapshot(audio::AudioEngine& engine,
@@ -252,6 +263,7 @@ struct ControlServer::Impl {
     std::unique_ptr<library::LibraryService> library_service;
     std::unique_ptr<importing::ImportService> import_service;
     std::unique_ptr<library::LibraryMaintenance> library_maintenance;
+    std::unique_ptr<library::WaveformService> waveform_service;
     std::unique_ptr<analysis::JsonTrackAnalysisRepository> analysis_repository;
     std::unique_ptr<analysis::AnalysisScheduler> analysis_scheduler;
     std::atomic<bool> performance_mode{true};
@@ -1051,6 +1063,8 @@ ControlServer::ControlServer(audio::AudioEngine& engine,
                 *impl_->library_service, cfg_.plus_library_dir,
                 path_within_fs_roots, cfg_.max_upload_bytes, cfg_.plus_data_dir / "assets", protect_audio);
             impl_->library_maintenance = std::make_unique<library::LibraryMaintenance>(*impl_->library_service, cfg_.plus_data_dir / "assets");
+            impl_->waveform_service = std::make_unique<library::WaveformService>(
+                cfg_.plus_data_dir / "cache" / "waveforms", protect_audio);
         } catch (const std::exception& e) {
             // A corrupt/unwritable Plus store must not prevent a legacy show.
             Logger::error("LivePlay+ library unavailable: {}", e.what());
@@ -1068,6 +1082,23 @@ ControlServer::ControlServer(audio::AudioEngine& engine,
             std::vector<std::shared_ptr<analysis::AnalysisProvider>> providers;
             if (const char* worker = std::getenv("LIVEPLAY_ANALYSIS_WORKER"); worker && *worker)
                 providers.push_back(std::make_shared<analysis::ExternalAnalysisProvider>(util::utf8_to_path(worker)));
+            std::filesystem::path basic_worker;
+            if (const char* worker = std::getenv("LIVEPLAY_FFMPEG_ANALYSIS_WORKER"); worker && *worker)
+                basic_worker = util::utf8_to_path(worker);
+            else {
+#if defined(_WIN32)
+                basic_worker = fs::current_path() / "liveplay-ffmpeg-analysis-worker.exe";
+#else
+                basic_worker = fs::current_path() / "liveplay-ffmpeg-analysis-worker";
+#endif
+            }
+            if (!basic_worker.empty() && fs::is_regular_file(basic_worker)) {
+                auto provider = std::make_shared<analysis::ExternalAnalysisProvider>(
+                    basic_worker, std::chrono::seconds(30), "ffmpeg-basic",
+                    json{{"basic", true}, {"loudness", true}});
+                try { if (provider->health_check()) providers.push_back(std::move(provider)); }
+                catch (const std::exception& e) { Logger::warn("FFmpeg basic analysis unavailable: {}", e.what()); }
+            }
             impl_->analysis_scheduler = std::make_unique<analysis::AnalysisScheduler>(
                 *impl_->analysis_repository, cfg_.plus_data_dir / "analysis", std::move(providers), protect_audio);
         } catch (const std::exception& e) { Logger::error("Plus analysis unavailable: {}", e.what()); }
@@ -2163,6 +2194,15 @@ void ControlServer::install_routes() {
                     : json{{"basic", false}, {"loudness", false}, {"rhythm", false}, {"tonality", false}, {"structure", false}, {"semantic", false}, {"stems", false}}},
                 {"analysisAvailable", impl_->analysis_scheduler && impl_->analysis_scheduler->available()}, {"storageError", cfg_.plus_storage_error},
                 {"performanceMode", impl_->performance_mode.load(std::memory_order_relaxed)},
+                {"plus", json{
+                    {"eventMvp", impl_->library_service != nullptr && plus_feature_enabled("LIVEPLAY_PLUS_EVENT_MVP", true)},
+                    {"waveform", impl_->waveform_service != nullptr && plus_feature_enabled("LIVEPLAY_PLUS_WAVEFORM", true)},
+                    {"basicAnalysis", impl_->analysis_scheduler && impl_->analysis_scheduler->capabilities().value("basic", false) && plus_feature_enabled("LIVEPLAY_PLUS_BASIC_ANALYSIS", true)},
+                    {"showBoard", impl_->library_service != nullptr && plus_feature_enabled("LIVEPLAY_PLUS_SHOW_BOARD", true)},
+                    {"trackGain", impl_->library_service != nullptr && plus_feature_enabled("LIVEPLAY_PLUS_TRACK_GAIN", true)},
+                    {"basicTransitions", impl_->library_service != nullptr && plus_feature_enabled("LIVEPLAY_PLUS_TRANSITIONS", true)},
+                    {"ruleRecommendations", impl_->library_service != nullptr && plus_feature_enabled("LIVEPLAY_PLUS_RECOMMENDATIONS", true)}
+                }},
                 {"maxBatchFiles", importing::ImportService::max_files},
                 {"maxAssetBytes", cfg_.max_upload_bytes},
                 {"maxTracks", library::JsonTrackRepository::max_tracks}});
@@ -2205,6 +2245,54 @@ void ControlServer::install_routes() {
             if (!impl_->library_service) return json_err(503, "library unavailable");
             const auto track = impl_->library_service->find(id);
             return track ? json_ok(json(*track)) : json_err(404, "track not found");
+        });
+
+    CROW_ROUTE(app, "/api/plus/library/tracks/<string>/waveform").methods(crow::HTTPMethod::Get)
+        ([this](const std::string& id) {
+            if (!impl_->library_service || !impl_->waveform_service) return json_err(503, "waveform unavailable");
+            const auto track = impl_->library_service->find(id);
+            return track ? json_ok(impl_->waveform_service->status(*track)) : json_err(404, "track not found");
+        });
+    CROW_ROUTE(app, "/api/plus/library/tracks/<string>/waveform").methods(crow::HTTPMethod::Post)
+        ([this](const std::string& id) {
+            if (!impl_->library_service || !impl_->waveform_service) return json_err(503, "waveform unavailable");
+            const auto track = impl_->library_service->find(id);
+            if (!track) return json_err(404, "track not found");
+            impl_->waveform_service->request(*track);
+            auto response = json_ok(impl_->waveform_service->status(*track)); response.code = 202; return response;
+        });
+    CROW_ROUTE(app, "/api/plus/library/tracks/<string>/tags").methods(crow::HTTPMethod::Patch)
+        ([this](const crow::request& req, const std::string& id) {
+            if (!impl_->library_service) return json_err(503, "library unavailable");
+            if (req.body.size() > 64 * 1024) return json_err(413, "tags request too large");
+            try {
+                auto track = impl_->library_service->find(id);
+                if (!track) return json_err(404, "track not found");
+                const auto body = json::parse(req.body);
+                track->tags = body.contains("tags") ? body.at("tags").get<library::TrackTags>() : body.get<library::TrackTags>();
+                impl_->library_service->update_metadata(*track);
+                return json_ok(json(*track));
+            } catch (const json::exception& e) { return json_err(400, e.what()); }
+            catch (const std::invalid_argument& e) { return json_err(400, e.what()); }
+            catch (const std::exception& e) { return json_err(500, e.what()); }
+        });
+
+    CROW_ROUTE(app, "/api/plus/recommendations").methods(crow::HTTPMethod::Post)
+        ([this](const crow::request& req) {
+            if (!impl_->library_service) return json_err(503, "library unavailable");
+            if (req.body.size() > 64 * 1024) return json_err(413, "recommendation request too large");
+            try {
+                const auto body = req.body.empty() ? json::object() : json::parse(req.body);
+                library::RecommendationRequest request;
+                request.event_role = body.value("eventRole", ""); request.target_energy = body.value("energy", 0);
+                request.avoid_artist = body.value("avoidArtist", ""); request.require_school_approved = body.value("schoolApproved", false);
+                request.limit = std::clamp<std::size_t>(body.value("limit", std::size_t{20}), 1, 100);
+                std::vector<library::Track> tracks; std::size_t offset = 0;
+                while (true) { const auto page = impl_->library_service->list(offset, 500); tracks.insert(tracks.end(), page.tracks.begin(), page.tracks.end()); offset += page.tracks.size(); if (offset >= page.total || page.tracks.empty()) break; }
+                library::RuleBasedRecommendationProvider provider;
+                return json_ok(json{{"provider", provider.id()}, {"tracks", provider.recommend(tracks, request)}});
+            } catch (const json::exception& e) { return json_err(400, e.what()); }
+            catch (const std::exception& e) { return json_err(500, e.what()); }
         });
 
     CROW_ROUTE(app, "/api/plus/imports").methods(crow::HTTPMethod::Post)

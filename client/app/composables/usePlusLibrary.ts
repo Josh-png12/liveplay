@@ -123,6 +123,20 @@ export function usePlusLibrary() {
     try { const value: any = await post('/performance', { enabled }); if (capabilities.value) capabilities.value.performanceMode = value.enabled; }
     catch (e) { error.value = String(e); }
   }
+  async function requestTrackWaveform(trackId: string) {
+    return request(`/library/tracks/${encodeURIComponent(trackId)}/waveform`, { method: 'POST', body: '{}' });
+  }
+  async function getTrackWaveform(trackId: string) {
+    return request<any>(`/library/tracks/${encodeURIComponent(trackId)}/waveform`);
+  }
+  async function updateTrackTags(trackId: string, tags: any) {
+    const updated = await request<PlusTrack>(`/library/tracks/${encodeURIComponent(trackId)}/tags`, { method: 'PATCH', body: JSON.stringify(tags) });
+    const index = tracks.value.findIndex(track => track.id === trackId); if (index >= 0) tracks.value[index] = updated;
+    return updated;
+  }
+  async function recommend(requestBody: any) {
+    return request<{ provider: string; tracks: PlusTrack[] }>('/recommendations', { method: 'POST', body: JSON.stringify(requestBody) });
+  }
   onBeforeUnmount(() => { disposed = true; clearTimeout(timer); for (const c of controllers) c.abort(); });
-  return { tracks, batches, capabilities, error, uploading, loading, maintenance, recovery, localFailures, initialize, refresh, importFiles, cancel, retry, maintain, recover, setPerformance };
+  return { tracks, batches, capabilities, error, uploading, loading, maintenance, recovery, localFailures, initialize, refresh, importFiles, cancel, retry, maintain, recover, setPerformance, requestTrackWaveform, getTrackWaveform, updateTrackTags, recommend };
 }

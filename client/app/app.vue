@@ -50,8 +50,9 @@
 
     <!-- Normal mode -->
     <template v-else>
-      <button class="plus-library-launch" @click="showPlusLibrary = true">{{ t('plusLibrary.title') }}</button>
+      <div class="plus-launches"><button class="plus-library-launch" @click="showPlusLibrary = true">{{ t('plusLibrary.title') }}</button><button class="plus-library-launch event-launch" @click="showEventMvp = true">{{ t('eventMvp.title') }}</button></div>
       <LibraryPanel v-if="showPlusLibrary" @close="showPlusLibrary = false" />
+      <EventMvpPanel v-if="showEventMvp" @close="showEventMvp = false" />
       <WelcomeScreen v-if="!currentProject" />
       <MainWorkspace v-else />
     
@@ -217,6 +218,7 @@ const { currentLocale, setLocale, getDirection, t } = useLocalization();
 const { theme: userTheme, resolvedThemeMode, setTheme } = usePreferences();
 const theme = useState('theme', () => 'dark');
 const showPlusLibrary = ref(false);
+const showEventMvp = ref(false);
 // The Help and View menus open Settings at a section rather than raising
 // modals of their own; see the listeners below.
 const { open: openSettings } = useSettingsPage();
@@ -675,7 +677,8 @@ onMounted(() => {
 </script>
 
 <style scoped>
-.plus-library-launch { position: fixed; bottom: 12px; right: 16px; z-index: 90; padding: 8px 14px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-surface); color: var(--color-text-primary); cursor: pointer; }
+.plus-launches { position: fixed; bottom: 12px; right: 16px; z-index: 90; display: flex; gap: 8px; }
+.plus-library-launch { padding: 8px 14px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-surface); color: var(--color-text-primary); cursor: pointer; }
 #app {
   width: 100%;
   height: 100%;

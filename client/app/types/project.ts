@@ -65,6 +65,20 @@ export interface AudioItem extends BaseItem {
   ltcEnabled?: boolean;         // output LTC on the project's ltcOutput when playing
   ltcStartTimecode?: string;    // starting timecode "HH:MM:SS:FF" (default "00:00:00:00")
   ltcFrameRate?: number;        // 0=24, 1=25, 2=29.97NDF, 3=29.97DF, 4=30 (default 4)
+  /** Optional LivePlay+ event metadata. Legacy fields above remain authoritative
+   * for playback and absent metadata has no effect on existing projects. */
+  eventCue?: EventCueMetadata;
+}
+
+export interface EventCueMetadata {
+  startMs?: number | null;
+  endMs?: number | null;
+  fadeInMs?: number;
+  fadeOutMs?: number;
+  trackGainDb?: number;
+  transition?: { type: 'cut' | 'fade' | 'crossfade'; durationMs: number };
+  preset?: 'sports-entry' | 'sports-exit' | 'background' | 'awards';
+  trackId?: string;
 }
 
 // Waveform data format (from the server's decoder, or legacy ffmpeg files)
