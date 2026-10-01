@@ -750,7 +750,7 @@ function createClient() {
         // headers (the multipart upload does) cannot accidentally drop the
         // credential and get a 401 it has no way to explain.
         headers: {
-          'Content-Type': 'application/json',
+          ...(init?.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
           ...(init?.headers as Record<string, string> | undefined),
           ...authHeader(),
         },
@@ -1806,6 +1806,7 @@ function createClient() {
     invalidateWaveformCache,
     fetchMetadata,
 
+    plusRequest: rest,
     // project I/O
     fetchProject,
     fetchProjectHeader,

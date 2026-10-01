@@ -84,3 +84,9 @@ Probes print measurements for investigation; their results depend on hardware an
 | `save-churn.js` | `<port> <wavPath> <projectDir> <serverLog>` |
 
 For deterministic C++ checks, see the [CTest instructions](../../../docs/DEVELOPMENT.md#checks). Protocol contracts live in the [API reference](https://tdoukinitsas.github.io/liveplay/api/), not this test guide.
+
+## Isolated Plus library suite
+
+Run `node server/tests/e2e/plus-library-e2e.js [server-executable]` from the repository root (default: `server/build/liveplay-server.exe`). It copies the server and adjacent DLLs to a disposable directory, starts port 4579, generates local WAVs, checks library/import/restart/auth behavior and legacy project/cue isolation, then removes its temporary files. No existing server or project is used. See [library implementation](../../../docs/LIBRARY_IMPORT.md).
+
+Add `--ui` after the executable to test the generated renderer in installed Edge headless using native JSON/CDP (no new test package). Run `npm run build:client` first. Override the browser with `LIVEPLAY_TEST_BROWSER` if needed. The test serves port 4578, uses CDP port 4581 and isolates its browser profile; covers multi-select/drop, duplicate/error display, search/sort/status filtering, relink and persisted batch restoration. The API suite also covers nullable analysis failure, explicit catalog recovery/restart and selected orphan cleanup/rebuild.

@@ -4,6 +4,11 @@ For installation and show operation, start with the [LivePlay README](../README.
 
 | Guide | Scope |
 |---|---|
+| [LivePlay+ architecture](ARCHITECTURE.md) | Architecture review and extension boundaries |
+| [LivePlay+ roadmap](ROADMAP.md) | Phases and acceptance criteria |
+| [Library/import implementation](LIBRARY_IMPORT.md) | Initial Plus model, services, storage and HTTP contract |
+| [Analysis foundation](ANALYSIS_ARCHITECTURE.md) | Independent jobs/results and future JSON worker protocol |
+| [Library benchmark](LIBRARY_BENCHMARK.md) | 100/500/1,000 imports and storage bottleneck evidence |
 | [Development](DEVELOPMENT.md) | Prerequisites, build commands, checks and repository layout |
 | [Server](../server/README.md) | Process configuration, services and concurrency |
 | [Client](../client/README.md) | Electron/renderer responsibilities and UI state |

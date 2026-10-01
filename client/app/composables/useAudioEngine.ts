@@ -590,7 +590,7 @@ export const useAudioEngine = () => {
   // Note: the server's WS `play` handler routes to trigger_item, which
   // dispatches audio→play_item and group→walk-startBehavior. So a single
   // playItem(uuid) is enough for both kinds of items.
-  const playCue = async (item: AudioItem): Promise<boolean> => {
+  const playCue = async (item: AudioItem | GroupItem): Promise<boolean> => {
     if (!item || !item.uuid) return false;
     server.playItem(item.uuid);
     return true;

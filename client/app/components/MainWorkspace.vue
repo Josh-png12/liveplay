@@ -665,7 +665,7 @@ if (import.meta.client && window.electronAPI) {
     for (const [key, value] of Object.entries(updates)) {
       if (!READONLY_ITEM_KEYS.has(key)) (item as any)[key] = value;
     }
-    updateCartOnlyItem(item.uuid, item);
+    if (item.type === 'audio') updateCartOnlyItem(item.uuid, item);
     saveProject();
     window.electronAPI.sendApiResponse({ requestId, success: true, cart: { slot, item } });
   });

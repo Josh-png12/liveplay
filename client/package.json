@@ -13,7 +13,9 @@
     "build:electron": "cross-env NODE_ENV=production nuxt generate && electron-builder",
     "electron:build": "electron-builder",
     "generate": "cross-env NODE_ENV=production nuxt generate",
-    "preview": "nuxt preview"
+    "preview": "nuxt preview",
+    "typecheck": "nuxt prepare && vue-tsc --noEmit",
+    "test": "node tests/window-bounds-tests.js && node tests/settings-form-placement-tests.js && node tests/mixer-regression-tests.js && node tests/library-tests.js"
   },
   "keywords": [
     "electron",

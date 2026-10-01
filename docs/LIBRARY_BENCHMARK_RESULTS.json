@@ -1,0 +1,45 @@
+{
+  "build": "Release Windows MSVC",
+  "fixture": "unique 1-second PCM WAV; stereo 48kHz s16; 192044 bytes per track",
+  "runs": [
+    {
+      "catalog_bytes": 63622,
+      "catalog_persistence_ms": 492.5140999999999,
+      "copy_ms": 49.35459999999997,
+      "failed_files": 0,
+      "hash_ms": 80.45780000000005,
+      "journal_persistence_ms": 434.6356999999999,
+      "metadata_ms": 23.854300000000002,
+      "other_ms": 216.8904000000001,
+      "persistence_ms": 927.1497999999998,
+      "total_ms": 1297.7069,
+      "tracks": 100
+    },
+    {
+      "catalog_bytes": 318822,
+      "catalog_persistence_ms": 4972.428499999994,
+      "copy_ms": 290.1816999999999,
+      "failed_files": 0,
+      "hash_ms": 461.9922999999999,
+      "journal_persistence_ms": 3372.3929999999996,
+      "metadata_ms": 125.57270000000013,
+      "other_ms": 2091.807800000008,
+      "persistence_ms": 8344.821499999993,
+      "total_ms": 11314.376,
+      "tracks": 500
+    },
+    {
+      "catalog_bytes": 637822,
+      "catalog_persistence_ms": 16055.531499999988,
+      "copy_ms": 625.6049000000005,
+      "failed_files": 0,
+      "hash_ms": 955.3218999999993,
+      "journal_persistence_ms": 10831.568299999983,
+      "metadata_ms": 257.7715,
+      "other_ms": 6876.939800000026,
+      "persistence_ms": 26887.09979999997,
+      "total_ms": 35602.7379,
+      "tracks": 1000
+    }
+  ]
+}

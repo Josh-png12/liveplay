@@ -1765,9 +1765,9 @@ export const useProject = () => {
             break;
           }
           case 'advance_pending': {
-            const from = typeof msg.fromUuid === 'string' ? msg.fromUuid : '';
+            const from = typeof patch.fromUuid === 'string' ? patch.fromUuid : '';
             advancePending.value = from
-              ? { fromUuid: from, dueAt: Date.now() + (Number(msg.dueInMs) || 0) }
+              ? { fromUuid: from, dueAt: Date.now() + (Number(patch.dueInMs) || 0) }
               : null;
             break;
           }

@@ -50,6 +50,8 @@
 
     <!-- Normal mode -->
     <template v-else>
+      <button class="plus-library-launch" @click="showPlusLibrary = true">Biblioteca musical</button>
+      <LibraryPanel v-if="showPlusLibrary" @close="showPlusLibrary = false" />
       <WelcomeScreen v-if="!currentProject" />
       <MainWorkspace v-else />
     
@@ -214,6 +216,7 @@ const { currentLocale, setLocale, getDirection, t } = useLocalization();
 // change; what moved is where its value comes from.
 const { theme: userTheme, resolvedThemeMode, setTheme } = usePreferences();
 const theme = useState('theme', () => 'dark');
+const showPlusLibrary = ref(false);
 // The Help and View menus open Settings at a section rather than raising
 // modals of their own; see the listeners below.
 const { open: openSettings } = useSettingsPage();
@@ -672,6 +675,7 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.plus-library-launch { position: fixed; bottom: 12px; right: 16px; z-index: 90; padding: 8px 14px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-surface); color: var(--color-text-primary); cursor: pointer; }
 #app {
   width: 100%;
   height: 100%;

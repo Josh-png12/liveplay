@@ -30,7 +30,9 @@
     "server:run": "node scripts/run-server.js",
     "dev:all": "concurrently -n server,client -c blue,green \"npm:server:run\" \"npm:dev:client\"",
     "version": "node scripts/version.js",
-    "bump": "node scripts/version.js"
+    "bump": "node scripts/version.js",
+    "typecheck:client": "npm run typecheck --workspace=client",
+    "test:client": "npm run test --workspace=client"
   },
   "devDependencies": {
     "concurrently": "^8.2.2"

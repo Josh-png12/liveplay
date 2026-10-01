@@ -5222,6 +5222,801 @@
         ]
       ],
       "source": "Crow app.h / settings.h / http_response.h (installed dependency)"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/plus/capabilities",
+      "title": "Inspect available LivePlay+ capabilities",
+      "category": "LivePlay+ library",
+      "auth": "Operator",
+      "apiToken": "Yes",
+      "fields": [],
+      "request": null,
+      "response": {
+        "schemaVersion": 1,
+        "library": true,
+        "imports": true,
+        "hashAlgorithm": "sha256",
+        "analysis": {
+          "basic": false,
+          "loudness": false,
+          "rhythm": false,
+          "tonality": false,
+          "structure": false,
+          "semantic": false,
+          "stems": false
+        },
+        "maxBatchFiles": 1000,
+        "maxAssetBytes": 268435456,
+        "maxTracks": 10000,
+        "analysisAvailable": false,
+        "storageError": ""
+      },
+      "notes": "Independent Plus user-data store (LOCALAPPDATA/LivePlay/plus on Windows), configurable using plusDataDir or LIVEPLAY_PLUS_DATA_DIR. Never creates project items or engine cues. Uses existing operator sessions; filesystem/analysis routes reject API tokens.",
+      "errors": [
+        [
+          "401",
+          "Authentication required when enabled"
+        ]
+      ]
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/plus/library/tracks",
+      "title": "List library tracks without loading playback cues",
+      "category": "LivePlay+ library",
+      "auth": "Operator",
+      "apiToken": "No",
+      "fields": [
+        [
+          "offset",
+          "integer (query)",
+          "No",
+          "0",
+          "Nonnegative offset; sorted by stable track ID."
+        ],
+        [
+          "limit",
+          "integer (query)",
+          "No",
+          "100",
+          "Page size 1..500."
+        ]
+      ],
+      "request": null,
+      "response": {
+        "tracks": [
+          {
+            "id": "track_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "title": "Example",
+            "artist": "",
+            "album": "",
+            "duration_ms": 1000,
+            "format": "wav",
+            "sample_rate": 48000,
+            "channels": 2,
+            "asset_path": "C:/Server/liveplay-plus/library/assets/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.wav",
+            "content_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "size_bytes": 192044,
+            "import_origin": "server_path",
+            "source_name": "Example.wav",
+            "imported_at": "2026-09-30T00:00:00Z"
+          }
+        ],
+        "total": 1,
+        "offset": 0,
+        "limit": 100
+      },
+      "notes": "Independent Plus user-data store (LOCALAPPDATA/LivePlay/plus on Windows), configurable using plusDataDir or LIVEPLAY_PLUS_DATA_DIR. Never creates project items or engine cues. Uses existing operator sessions; filesystem/analysis routes reject API tokens.",
+      "errors": [
+        [
+          "401",
+          "Authentication required when enabled"
+        ],
+        [
+          "400",
+          "Invalid pagination"
+        ],
+        [
+          "403",
+          "API-token filesystem access denied"
+        ],
+        [
+          "503",
+          "Library disabled or invalid store"
+        ]
+      ]
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/plus/library/tracks/<string>",
+      "title": "Read a library track",
+      "category": "LivePlay+ library",
+      "auth": "Operator",
+      "apiToken": "No",
+      "fields": [
+        [
+          "id",
+          "string (path)",
+          "Yes",
+          "-",
+          "Stable library identity."
+        ]
+      ],
+      "request": null,
+      "response": {
+        "id": "track_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "title": "Example",
+        "artist": "",
+        "album": "",
+        "duration_ms": 1000,
+        "format": "wav",
+        "sample_rate": 48000,
+        "channels": 2,
+        "asset_path": "C:/Server/liveplay-plus/library/assets/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.wav",
+        "content_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "size_bytes": 192044,
+        "import_origin": "server_path",
+        "source_name": "Example.wav",
+        "imported_at": "2026-09-30T00:00:00Z"
+      },
+      "notes": "Independent Plus user-data store (LOCALAPPDATA/LivePlay/plus on Windows), configurable using plusDataDir or LIVEPLAY_PLUS_DATA_DIR. Never creates project items or engine cues. Uses existing operator sessions; filesystem/analysis routes reject API tokens.",
+      "errors": [
+        [
+          "401",
+          "Authentication required when enabled"
+        ],
+        [
+          "404",
+          "Track not found"
+        ],
+        [
+          "403",
+          "API-token filesystem access denied"
+        ],
+        [
+          "503",
+          "Library disabled or invalid store"
+        ]
+      ],
+      "responseSchema": "PlusTrack"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/plus/imports",
+      "title": "Queue an independent server-path import batch",
+      "category": "LivePlay+ library",
+      "auth": "Operator",
+      "apiToken": "No",
+      "fields": [
+        [
+          "files",
+          "string[]",
+          "Yes",
+          "-",
+          "1..1000 absolute server paths inside configured filesystem roots; request JSON <= 1 MiB."
+        ],
+        [
+          "requestId",
+          "string",
+          "No",
+          "Empty",
+          "Optional <=128-byte idempotency key. Reuse with different input returns 400."
+        ],
+        [
+          "relinkTrackId",
+          "string",
+          "No",
+          "-",
+          "Explicit one-file relink. SHA-256 must match the existing track; its metadata and ID remain."
+        ]
+      ],
+      "request": {
+        "files": [
+          "C:/Audio/Example.wav"
+        ],
+        "requestId": "my-import-1"
+      },
+      "response": {
+        "id": "batch_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "request_id": "my-import-1",
+        "origin": "server_path",
+        "status": "queued",
+        "cancel_requested": false,
+        "files": [
+          {
+            "source": {
+              "path": "C:/Audio/Example.wav",
+              "name": "Example.wav"
+            },
+            "status": "queued",
+            "track_id": "",
+            "error": ""
+          }
+        ]
+      },
+      "notes": "Independent Plus user-data store (LOCALAPPDATA/LivePlay/plus on Windows), configurable using plusDataDir or LIVEPLAY_PLUS_DATA_DIR. Never creates project items or engine cues. Uses existing operator sessions; filesystem/analysis routes reject API tokens.",
+      "errors": [
+        [
+          "401",
+          "Authentication required when enabled"
+        ],
+        [
+          "202",
+          "Accepted: query the returned batch ID for per-file results"
+        ],
+        [
+          "400",
+          "Invalid JSON/paths or conflicting requestId"
+        ],
+        [
+          "403",
+          "Source outside filesystem roots"
+        ],
+        [
+          "413",
+          "Request too large"
+        ],
+        [
+          "429",
+          "64 active batches queued or journal size limit"
+        ],
+        [
+          "500",
+          "Journal/storage failure"
+        ],
+        [
+          "403",
+          "API-token filesystem access denied"
+        ],
+        [
+          "503",
+          "Library disabled or invalid store"
+        ]
+      ],
+      "responseSchema": "PlusImportBatch"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/plus/imports/upload",
+      "title": "Stage multipart audio directly into the library",
+      "category": "LivePlay+ library",
+      "auth": "Operator",
+      "apiToken": "No",
+      "fields": [
+        [
+          "file",
+          "multipart file(s)",
+          "Yes",
+          "-",
+          "1..1000 files with plain filenames. Total request <= maxUploadBytes, including multipart overhead. No open project required."
+        ],
+        [
+          "relinkTrackId (query)",
+          "string",
+          "No",
+          "-",
+          "Optional explicit one-file relink using multipart upload."
+        ]
+      ],
+      "request": null,
+      "response": {
+        "id": "batch_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "request_id": "",
+        "origin": "upload",
+        "status": "queued",
+        "cancel_requested": false,
+        "files": [
+          {
+            "source": {
+              "path": "C:/Audio/Example.wav",
+              "name": "Example.wav"
+            },
+            "status": "queued",
+            "track_id": "",
+            "error": ""
+          }
+        ]
+      },
+      "notes": "Independent Plus user-data store (LOCALAPPDATA/LivePlay/plus on Windows), configurable using plusDataDir or LIVEPLAY_PLUS_DATA_DIR. Never creates project items or engine cues. Uses existing operator sessions; filesystem/analysis routes reject API tokens.",
+      "errors": [
+        [
+          "401",
+          "Authentication required when enabled"
+        ],
+        [
+          "202",
+          "Accepted; uploaded staging is cleaned after processing"
+        ],
+        [
+          "400",
+          "Invalid multipart filenames/empty files/unsupported extension"
+        ],
+        [
+          "413",
+          "Total multipart request too large"
+        ],
+        [
+          "429",
+          "Import queue is full"
+        ],
+        [
+          "500",
+          "Staging/storage failure"
+        ],
+        [
+          "403",
+          "API-token filesystem access denied"
+        ],
+        [
+          "503",
+          "Library disabled or invalid store"
+        ]
+      ],
+      "responseSchema": "PlusImportBatch"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/plus/imports/<string>",
+      "title": "Read batch progress and per-file results",
+      "category": "LivePlay+ library",
+      "auth": "Operator",
+      "apiToken": "No",
+      "fields": [
+        [
+          "id",
+          "string (path)",
+          "Yes",
+          "-",
+          "Import batch ID."
+        ]
+      ],
+      "request": null,
+      "response": {
+        "id": "batch_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "request_id": "my-import-1",
+        "origin": "server_path",
+        "status": "queued",
+        "cancel_requested": false,
+        "files": [
+          {
+            "source": {
+              "path": "C:/Audio/Example.wav",
+              "name": "Example.wav"
+            },
+            "status": "queued",
+            "track_id": "",
+            "error": ""
+          }
+        ]
+      },
+      "notes": "Independent Plus user-data store (LOCALAPPDATA/LivePlay/plus on Windows), configurable using plusDataDir or LIVEPLAY_PLUS_DATA_DIR. Never creates project items or engine cues. Uses existing operator sessions; filesystem/analysis routes reject API tokens.",
+      "errors": [
+        [
+          "401",
+          "Authentication required when enabled"
+        ],
+        [
+          "404",
+          "Unknown or expired batch"
+        ],
+        [
+          "403",
+          "API-token filesystem access denied"
+        ],
+        [
+          "503",
+          "Library disabled or invalid store"
+        ]
+      ],
+      "responseSchema": "PlusImportBatch"
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/plus/imports/<string>/cancel",
+      "title": "Request cooperative cancellation of a batch",
+      "category": "LivePlay+ library",
+      "auth": "Operator",
+      "apiToken": "No",
+      "fields": [
+        [
+          "id",
+          "string (path)",
+          "Yes",
+          "-",
+          "Import batch ID."
+        ]
+      ],
+      "request": {},
+      "response": {
+        "id": "batch_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "request_id": "my-import-1",
+        "origin": "server_path",
+        "status": "queued",
+        "cancel_requested": true,
+        "files": [
+          {
+            "source": {
+              "path": "C:/Audio/Example.wav",
+              "name": "Example.wav"
+            },
+            "status": "queued",
+            "track_id": "",
+            "error": ""
+          }
+        ]
+      },
+      "notes": "Independent Plus user-data store (LOCALAPPDATA/LivePlay/plus on Windows), configurable using plusDataDir or LIVEPLAY_PLUS_DATA_DIR. Never creates project items or engine cues. Uses existing operator sessions; filesystem/analysis routes reject API tokens.",
+      "errors": [
+        [
+          "401",
+          "Authentication required when enabled"
+        ],
+        [
+          "404",
+          "Unknown or expired batch"
+        ],
+        [
+          "500",
+          "Cannot persist cancellation"
+        ],
+        [
+          "403",
+          "API-token filesystem access denied"
+        ],
+        [
+          "503",
+          "Library disabled or invalid store"
+        ]
+      ],
+      "responseSchema": "PlusImportBatch"
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/plus/library/maintenance",
+      "title": "Read library verification progress",
+      "category": "LivePlay+ library",
+      "auth": "Operator",
+      "apiToken": "No",
+      "fields": [],
+      "request": null,
+      "response": {
+        "status": "idle",
+        "orphans": []
+      },
+      "notes": "Background Plus operation; independent of project and playback. Destructive changes require explicit operation/confirmation.",
+      "errors": [
+        [
+          "401",
+          "Authentication required"
+        ],
+        [
+          "403",
+          "API tokens excluded"
+        ],
+        [
+          "400",
+          "Invalid input"
+        ],
+        [
+          "503",
+          "Service unavailable"
+        ]
+      ]
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/plus/library/maintenance",
+      "title": "Verify, rebuild or explicitly clean selected orphan assets",
+      "category": "LivePlay+ library",
+      "auth": "Operator",
+      "apiToken": "No",
+      "fields": [
+        [
+          "operation",
+          "string",
+          "Yes",
+          "-",
+          "verify, rebuild or cleanup; returns 202."
+        ],
+        [
+          "assets",
+          "string[]",
+          "For cleanup",
+          "[]",
+          "Plain filenames selected for deletion; referenced assets and symlinks never deleted."
+        ],
+        [
+          "confirm",
+          "boolean",
+          "For cleanup",
+          "false",
+          "Must be true to delete selected orphan assets."
+        ]
+      ],
+      "request": {
+        "operation": "verify"
+      },
+      "response": {
+        "status": "running",
+        "operation": "verify",
+        "checked": 0,
+        "orphans": []
+      },
+      "notes": "Background Plus operation; independent of project and playback. Destructive changes require explicit operation/confirmation.",
+      "errors": [
+        [
+          "401",
+          "Authentication required"
+        ],
+        [
+          "403",
+          "API tokens excluded"
+        ],
+        [
+          "400",
+          "Invalid input"
+        ],
+        [
+          "503",
+          "Service unavailable"
+        ]
+      ]
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/plus/library/recovery",
+      "title": "Inspect corruption and recovery backups",
+      "category": "LivePlay+ library",
+      "auth": "Operator",
+      "apiToken": "No",
+      "fields": [],
+      "request": null,
+      "response": {
+        "available": false,
+        "error": "invalid catalog",
+        "backups": [
+          "catalog.backup.json"
+        ]
+      },
+      "notes": "Background Plus operation; independent of project and playback. Destructive changes require explicit operation/confirmation.",
+      "errors": [
+        [
+          "401",
+          "Authentication required"
+        ],
+        [
+          "403",
+          "API tokens excluded"
+        ],
+        [
+          "400",
+          "Invalid input"
+        ],
+        [
+          "503",
+          "Service unavailable"
+        ]
+      ]
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/plus/library/recovery",
+      "title": "Explicitly restore or reset a disabled catalog",
+      "category": "LivePlay+ library",
+      "auth": "Operator",
+      "apiToken": "No",
+      "fields": [
+        [
+          "action",
+          "string",
+          "Yes",
+          "-",
+          "restore or reset; allowed only when library is unavailable."
+        ],
+        [
+          "backup",
+          "string",
+          "For restore",
+          "-",
+          "Plain catalog.*.json filename within library directory; validated before replacement."
+        ],
+        [
+          "confirm",
+          "boolean",
+          "Yes",
+          "false",
+          "Explicit authorization to replace catalog; preserves original backup and assets."
+        ]
+      ],
+      "request": {
+        "action": "restore",
+        "backup": "catalog.backup.json",
+        "confirm": true
+      },
+      "response": {
+        "restart_required": true,
+        "assets_preserved": true
+      },
+      "notes": "Background Plus operation; independent of project and playback. Destructive changes require explicit operation/confirmation.",
+      "errors": [
+        [
+          "401",
+          "Authentication required"
+        ],
+        [
+          "403",
+          "API tokens excluded"
+        ],
+        [
+          "400",
+          "Invalid input"
+        ],
+        [
+          "503",
+          "Service unavailable"
+        ]
+      ]
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/plus/analysis/jobs",
+      "title": "List independent analysis jobs",
+      "category": "LivePlay+ library",
+      "auth": "Operator",
+      "apiToken": "No",
+      "fields": [],
+      "request": null,
+      "response": {
+        "jobs": []
+      },
+      "notes": "Background Plus operation; independent of project and playback. Destructive changes require explicit operation/confirmation.",
+      "errors": [
+        [
+          "401",
+          "Authentication required"
+        ],
+        [
+          "403",
+          "API tokens excluded"
+        ],
+        [
+          "400",
+          "Invalid input"
+        ],
+        [
+          "503",
+          "Service unavailable"
+        ]
+      ]
+    },
+    {
+      "methods": [
+        "POST"
+      ],
+      "path": "/api/plus/analysis/jobs",
+      "title": "Submit an analysis provider job",
+      "category": "LivePlay+ library",
+      "auth": "Operator",
+      "apiToken": "No",
+      "fields": [
+        [
+          "track_id",
+          "string",
+          "Yes",
+          "-",
+          "Existing library Track ID."
+        ],
+        [
+          "provider",
+          "string",
+          "Yes",
+          "-",
+          "Provider ID. No providers ship in Phase 1.5; unavailable jobs fail explicitly without affecting playback."
+        ]
+      ],
+      "request": {
+        "track_id": "track_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "provider": "unavailable"
+      },
+      "response": {
+        "id": "job_track_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa_unavailable",
+        "status": "pending"
+      },
+      "notes": "Background Plus operation; independent of project and playback. Destructive changes require explicit operation/confirmation.",
+      "errors": [
+        [
+          "401",
+          "Authentication required"
+        ],
+        [
+          "403",
+          "API tokens excluded"
+        ],
+        [
+          "400",
+          "Invalid input"
+        ],
+        [
+          "503",
+          "Service unavailable"
+        ]
+      ]
+    },
+    {
+      "methods": [
+        "GET"
+      ],
+      "path": "/api/plus/analysis/tracks/<string>",
+      "title": "Read optional per-track analysis",
+      "category": "LivePlay+ library",
+      "auth": "Operator",
+      "apiToken": "No",
+      "fields": [
+        [
+          "track_id (path)",
+          "string",
+          "Yes",
+          "-",
+          "SHA-256 Track ID; 404 when no analysis exists."
+        ]
+      ],
+      "request": null,
+      "response": {
+        "track_id": "track_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "analysis_version": 1,
+        "status": "pending",
+        "providers": {},
+        "basic": {
+          "duration_ms": null,
+          "peak_dbfs": null,
+          "rms_dbfs": null
+        }
+      },
+      "responseSchema": "PlusTrackAnalysis",
+      "notes": "Background Plus operation; independent of project and playback. Destructive changes require explicit operation/confirmation.",
+      "errors": [
+        [
+          "401",
+          "Authentication required"
+        ],
+        [
+          "403",
+          "API tokens excluded"
+        ],
+        [
+          "400",
+          "Invalid input"
+        ],
+        [
+          "503",
+          "Service unavailable"
+        ]
+      ]
     }
   ],
   "schemas": [
@@ -7031,6 +7826,206 @@
           "Yes",
           "-",
           "index integer, MeterSample fields, gain_reduction_db number (non-positive). Only peak > -119 dB, max peak > -119 dB or reduction < -0.05 dB are emitted."
+        ]
+      ]
+    },
+    {
+      "name": "PlusTrack",
+      "description": "Server library record, independent of project items and engine cues. Exact-byte SHA-256 identity; first-import metadata is retained on duplicates.",
+      "fields": [
+        [
+          "id",
+          "string",
+          "Response only",
+          "-",
+          "track_ followed by the complete SHA-256 hex digest; stable across duplicate imports."
+        ],
+        [
+          "title, artist, album",
+          "string",
+          "Response only",
+          "-",
+          "TagLib metadata. Title falls back to the original filename stem; artist/album may be empty."
+        ],
+        [
+          "duration_ms",
+          "integer (ms)",
+          "Response only",
+          "-",
+          "Positive source duration."
+        ],
+        [
+          "format",
+          "string",
+          "Response only",
+          "-",
+          "Lowercase source container extension without dot, not a verified codec identifier."
+        ],
+        [
+          "sample_rate, channels",
+          "integer",
+          "Response only",
+          "-",
+          "Source properties when available; 0 means unknown."
+        ],
+        [
+          "asset_path",
+          "string",
+          "Response only",
+          "-",
+          "UTF-8 absolute path to the server-owned copied asset, not a client path."
+        ],
+        [
+          "content_hash",
+          "string",
+          "Response only",
+          "-",
+          "sha256:<64 lowercase hex>, calculated over copied asset bytes."
+        ],
+        [
+          "size_bytes",
+          "integer",
+          "Response only",
+          "-",
+          "Exact copied byte count."
+        ],
+        [
+          "import_origin",
+          "string",
+          "Response only",
+          "-",
+          "server_path or upload; origin of first successful registration."
+        ],
+        [
+          "source_name",
+          "string",
+          "Response only",
+          "-",
+          "Original plain filename."
+        ],
+        [
+          "imported_at",
+          "string",
+          "Response only",
+          "-",
+          "UTC timestamp of first registration."
+        ],
+        [
+          "status",
+          "string",
+          "Response only",
+          "available",
+          "available, missing or corrupt; metadata is preserved. Missing is also checked on reads."
+        ]
+      ]
+    },
+    {
+      "name": "PlusImportBatch",
+      "description": "Durable per-file ingestion result. Accepted before processing; poll by ID. Completed means processing finished, including individual failures. JSON journals retain up to 64 batches; requestId idempotency applies while the journal is retained.",
+      "fields": [
+        [
+          "id",
+          "string",
+          "Response only",
+          "-",
+          "Opaque batch_<32 lowercase hex> identifier."
+        ],
+        [
+          "request_id",
+          "string",
+          "Response only",
+          "-",
+          "Optional client requestId for server-path imports (maximum 128 bytes)."
+        ],
+        [
+          "origin",
+          "string",
+          "Response only",
+          "-",
+          "server_path or upload."
+        ],
+        [
+          "status",
+          "string",
+          "Response only",
+          "-",
+          "queued, running, completed, cancelled; failed if the journal writer fails (runtime diagnostic)."
+        ],
+        [
+          "cancel_requested",
+          "boolean",
+          "Response only",
+          "-",
+          "Cancellation is cooperative; already committed tracks remain in the library."
+        ],
+        [
+          "files",
+          "object[]",
+          "Response only",
+          "-",
+          "Input order preserved. Each entry: source {path,name}, status queued/imported/duplicate/failed/cancelled, track_id or empty, error or empty."
+        ],
+        [
+          "relink_track_id",
+          "string",
+          "Response only",
+          "empty",
+          "Target track of explicit relink."
+        ],
+        [
+          "files[].timings",
+          "object",
+          "Response only",
+          "zeros",
+          "hash_ms, copy_ms, metadata_ms and persistence_ms for pipeline benchmarking."
+        ],
+        [
+          "journal_ms",
+          "number",
+          "Response only",
+          "0",
+          "Accumulated journal writes in milliseconds; separate from per-file catalog persistence. The persisted counter excludes its final write."
+        ]
+      ]
+    },
+    {
+      "name": "PlusTrackAnalysis",
+      "description": "Independent versioned analysis record. Analytical sections/fields may be absent or null; no DSP or providers are installed in Phase 1.5.",
+      "fields": [
+        [
+          "track_id",
+          "string",
+          "Yes",
+          "-",
+          "Track ID."
+        ],
+        [
+          "analysis_version",
+          "integer",
+          "Yes",
+          "1",
+          "Schema version."
+        ],
+        [
+          "status",
+          "string",
+          "No",
+          "pending",
+          "pending, running, completed, failed."
+        ],
+        [
+          "providers",
+          "object|null",
+          "No",
+          "{}",
+          "Provider provenance and errors."
+        ],
+        [
+          "basic, loudness, rhythm, tonality, structure",
+          "object|null",
+          "No",
+          "null values",
+          "Nullable analytical values; see ANALYSIS_ARCHITECTURE.md."
         ]
       ]
     }

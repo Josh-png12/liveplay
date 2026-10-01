@@ -14,6 +14,7 @@
 #include "liveplay/core/user_store.hpp"
 #include "liveplay/crash_handler.hpp"
 #include "liveplay/logger.hpp"
+#include "liveplay/library/data_directory.hpp"
 #include "liveplay/util/unicode_path.hpp"
 #include "liveplay/net/control_server.hpp"
 #include "liveplay/net/discovery.hpp"
@@ -251,6 +252,7 @@ void print_banner(const std::string& bind_iface, int port) {
 }
 
 struct CliOptions {
+    std::optional<std::string> plus_data_directory;
     int         port      = kDefaultPort;
     std::string bind_addr = "0.0.0.0";
     std::string pidfile;                   // optional; if set, write JSON {pid,port,startedAt}
@@ -467,6 +469,7 @@ void apply_config_file(CliOptions& opts, const std::filesystem::path& path) {
     if (auto v = text("bind"))                       opts.bind_addr = *v;
     if (auto v = num("meterHz", 1, 120))
         opts.meter_broadcast_hz = static_cast<std::size_t>(*v);
+    if (auto v = accept("plusDataDir")) opts.plus_data_directory = v->get<std::string>();
     if (auto v = num("maxUploadMb", 1, 8'192))
         opts.max_upload_bytes = static_cast<std::size_t>(*v) * 1024ull * 1024ull;
     if (auto v = num("mixSampleRate", 8'000, 192'000))
@@ -1183,6 +1186,16 @@ int main(int argc, char** argv) {
     if (opts.meter_broadcast_hz) server_cfg.meter_broadcast_hz = *opts.meter_broadcast_hz;
     if (opts.max_upload_bytes)   server_cfg.max_upload_bytes   = *opts.max_upload_bytes;
     server_cfg.fs_browse_roots = opts.fs_browse_roots;
+    try {
+        server_cfg.plus_data_dir = library::resolve_plus_directory(opts.plus_data_directory.value_or(""));
+        server_cfg.plus_library_dir = server_cfg.plus_data_dir / "library";
+        library::migrate_plus_directory(exe_dir / "liveplay-plus" / "library", server_cfg.plus_data_dir);
+        std::filesystem::create_directories(server_cfg.plus_data_dir / "cache");
+        std::filesystem::create_directories(server_cfg.plus_data_dir / "analysis");
+    } catch (const std::exception& e) {
+        server_cfg.plus_storage_error = e.what();
+        Logger::error("Plus data directory unavailable: {}", e.what());
+    }
     if (opts.cors_allow_origin)  server_cfg.cors_allow_origin  = *opts.cors_allow_origin;
 
     // What is actually in force, and who set it. Built here because this is the
@@ -1206,6 +1219,7 @@ int main(int argc, char** argv) {
         eff["maxBuses"]        = opts.max_buses.value_or(eng.max_mixer_channels);
         eff["masterCeilingDb"] = opts.master_ceiling_db.value_or(eng.master_ceiling_db);
         eff["fsRoots"]         = opts.fs_browse_roots;
+        eff["plusDataDir"]     = util::path_to_utf8(server_cfg.plus_data_dir);
         eff["corsOrigin"]      = server_cfg.cors_allow_origin;
         eff["verbose"]         = opts.verbose;
 

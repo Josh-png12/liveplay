@@ -262,7 +262,7 @@ watch(
     currentProject.value?.items?.length ?? 0,
     projectEpoch.value,
   ],
-  ([folder, name, , epoch], [prevFolder, prevName, , prevEpoch] = ['', '', 0, 0]) => {
+  ([folder, name, , epoch], [prevFolder, prevName, , prevEpoch]) => {
     // Reset the "already requested" tracker when the project changes. Temporary
     // group reveals go with it — they point at uuids from the old document.
     //

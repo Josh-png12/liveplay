@@ -20,6 +20,13 @@
 #include "liveplay/meta/metadata.hpp"
 #include "liveplay/meta/waveform.hpp"
 #include "liveplay/util/unicode_path.hpp"
+#include "liveplay/library/track_repository.hpp"
+#include "liveplay/library/library_service.hpp"
+#include "liveplay/library/data_directory.hpp"
+#include "liveplay/library/maintenance.hpp"
+#include "liveplay/analysis/analysis.hpp"
+#include "liveplay/util/atomic_json.hpp"
+#include "liveplay/import/import_service.hpp"
 
 #if defined(_WIN32)
 #  include <windows.h>      // GetLogicalDrives(), GetVolumeInformationW(), ...
@@ -34,6 +41,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <charconv>
 #include <condition_variable>
 #include <cstdlib>
 #include <cstring>
@@ -234,6 +242,14 @@ struct ControlServer::Impl {
         std::string credential;
     };
     std::unordered_map<crow::websocket::connection*, ClientSession> ws_clients;
+
+    // Declaration order keeps repository/service alive until imports have joined.
+    std::unique_ptr<library::JsonTrackRepository> track_repository;
+    std::unique_ptr<library::LibraryService> library_service;
+    std::unique_ptr<importing::ImportService> import_service;
+    std::unique_ptr<library::LibraryMaintenance> library_maintenance;
+    std::unique_ptr<analysis::JsonTrackAnalysisRepository> analysis_repository;
+    std::unique_ptr<analysis::AnalysisScheduler> analysis_scheduler;
 
     // Caller holds ws_mutex. UserStore never calls back into the server while
     // holding its lock. Rejection sticks until onclose removes the connection.
@@ -885,6 +901,9 @@ static bool api_token_forbidden(std::string_view path) {
     // 1 — the filesystem
     if (path.rfind("/api/fs", 0) == 0)   return true;   // list, mkdir
     if (path == "/api/upload")           return true;
+    // Library/import responses expose server asset paths; apply the same
+    // human-session boundary as media browsing and copying.
+    if (path.starts_with("/api/plus/library") || path.starts_with("/api/plus/imports") || path.starts_with("/api/plus/analysis")) return true;
     if (path == "/api/file/download")    return true;
     if (path == "/api/copy_to_media")    return true;
     if (path == "/api/project/import")   return true;   // an archive in…
@@ -1010,6 +1029,32 @@ ControlServer::ControlServer(audio::AudioEngine& engine,
     // Same reasoning, same moment: the guard has to know where to look up a
     // token before any request can arrive.
     impl_->app.get_middleware<AuthGuard>().users = &users_;
+    if (!cfg_.plus_library_dir.empty() && cfg_.plus_storage_error.empty()) {
+        try {
+            impl_->track_repository = std::make_unique<library::JsonTrackRepository>(
+                cfg_.plus_library_dir / "catalog.json", cfg_.plus_data_dir);
+            impl_->library_service = std::make_unique<library::LibraryService>(*impl_->track_repository);
+            impl_->import_service = std::make_unique<importing::ImportService>(
+                *impl_->library_service, cfg_.plus_library_dir,
+                path_within_fs_roots, cfg_.max_upload_bytes, cfg_.plus_data_dir / "assets");
+            impl_->library_maintenance = std::make_unique<library::LibraryMaintenance>(*impl_->library_service, cfg_.plus_data_dir / "assets");
+        } catch (const std::exception& e) {
+            // A corrupt/unwritable Plus store must not prevent a legacy show.
+            Logger::error("LivePlay+ library unavailable: {}", e.what());
+            cfg_.plus_storage_error = e.what();
+            try { library::backup_corrupt_catalog(cfg_.plus_library_dir / "catalog.json"); } catch (...) {}
+            impl_->import_service.reset();
+            impl_->library_service.reset();
+            impl_->track_repository.reset();
+        }
+    }
+    // Analysis initialization failure must not disable library or playback.
+    if (!cfg_.plus_data_dir.empty()) {
+        try {
+            impl_->analysis_repository = std::make_unique<analysis::JsonTrackAnalysisRepository>(cfg_.plus_data_dir / "analysis" / "tracks");
+            impl_->analysis_scheduler = std::make_unique<analysis::AnalysisScheduler>(*impl_->analysis_repository, cfg_.plus_data_dir / "analysis");
+        } catch (const std::exception& e) { Logger::error("Plus analysis unavailable: {}", e.what()); }
+    }
 }
 
 ControlServer::~ControlServer() { stop(); }
@@ -2091,6 +2136,207 @@ void ControlServer::install_routes() {
     // No OPTIONS route: Crow answers preflights itself and never dispatches
     // them to a rule, so the CORS headers are added in AuthGuard::after_handle.
 
+    // ---- LivePlay+: independent library and background ingestion ----
+    CROW_ROUTE(app, "/api/plus/capabilities").methods(crow::HTTPMethod::Get)
+        ([this] {
+            return json_ok(json{{"schemaVersion", 1},
+                {"library", impl_->library_service != nullptr},
+                {"imports", impl_->import_service != nullptr},
+                {"hashAlgorithm", "sha256"}, {"analysis", impl_->analysis_scheduler ? impl_->analysis_scheduler->capabilities()
+                    : json{{"basic", false}, {"loudness", false}, {"rhythm", false}, {"tonality", false}, {"structure", false}, {"semantic", false}, {"stems", false}}},
+                {"analysisAvailable", false}, {"storageError", cfg_.plus_storage_error},
+                {"maxBatchFiles", importing::ImportService::max_files},
+                {"maxAssetBytes", cfg_.max_upload_bytes},
+                {"maxTracks", library::JsonTrackRepository::max_tracks}});
+        });
+
+    CROW_ROUTE(app, "/api/plus/library/tracks").methods(crow::HTTPMethod::Get)
+        ([this](const crow::request& req) {
+            if (!impl_->library_service) return json_err(503, "library unavailable");
+            std::size_t offset = 0, limit = 100;
+            const auto parse = [](const char* text, std::size_t& value) {
+                if (!text) return true;
+                const auto end = text + std::strlen(text);
+                const auto result = std::from_chars(text, end, value);
+                return text != end && result.ec == std::errc{} && result.ptr == end;
+            };
+            if (!parse(req.url_params.get("offset"), offset) ||
+                !parse(req.url_params.get("limit"), limit) || limit == 0 || limit > 500)
+                return json_err(400, "offset must be nonnegative; limit must be 1..500");
+            try {
+                const auto page = impl_->library_service->list(offset, limit);
+                return json_ok(json{{"tracks", page.tracks}, {"total", page.total},
+                                    {"offset", offset}, {"limit", limit}});
+            } catch (const std::exception& e) { return json_err(500, e.what()); }
+        });
+
+    CROW_ROUTE(app, "/api/plus/library/tracks/<string>").methods(crow::HTTPMethod::Get)
+        ([this](const std::string& id) {
+            if (!impl_->library_service) return json_err(503, "library unavailable");
+            const auto track = impl_->library_service->find(id);
+            return track ? json_ok(json(*track)) : json_err(404, "track not found");
+        });
+
+    CROW_ROUTE(app, "/api/plus/imports").methods(crow::HTTPMethod::Post)
+        ([this](const crow::request& req) {
+            if (!impl_->import_service) return json_err(503, "library unavailable");
+            if (req.body.size() > 1024 * 1024) return json_err(413, "import request too large");
+            try {
+                const auto body = json::parse(req.body);
+                if (!body.is_object() || !body.contains("files") || !body.at("files").is_array() ||
+                    body.at("files").empty() || body.at("files").size() > importing::ImportService::max_files ||
+                    (body.contains("requestId") && !body.at("requestId").is_string()))
+                    return json_err(400, "expected files array (1..1000) and optional requestId");
+                std::vector<importing::ImportFile> files;
+                for (const auto& file : body.at("files")) {
+                    if (!file.is_string()) return json_err(400, "files must contain absolute server paths");
+                    const auto text = file.get<std::string>();
+                    if (text.empty() || text.find('\0') != std::string::npos)
+                        return json_err(400, "invalid source path");
+                    const auto path = util::utf8_to_path(text);
+                    if (!path.is_absolute()) return json_err(400, "source paths must be absolute");
+                    if (!path_within_fs_roots(path)) return json_fs_denied();
+                    files.push_back({text, {}});
+                }
+                const auto batch = impl_->import_service->submit(std::move(files), "server_path",
+                    body.value("requestId", std::string{}), body.value("relinkTrackId", std::string{}));
+                auto response = json_ok(json(batch));
+                response.code = 202;
+                return response;
+            } catch (const std::length_error& e) { return json_err(429, e.what()); }
+            catch (const std::invalid_argument& e) { return json_err(400, e.what()); }
+            catch (const json::exception& e) { return json_err(400, e.what()); }
+            catch (const std::exception& e) { return json_err(500, e.what()); }
+        });
+
+    CROW_ROUTE(app, "/api/plus/imports/upload").methods(crow::HTTPMethod::Post)
+        ([this](const crow::request& req) {
+            if (!impl_->import_service) return json_err(503, "library unavailable");
+            if (req.body.size() > cfg_.max_upload_bytes) return json_err(413, "payload too large");
+            std::vector<fs::path> staged;
+            try {
+                crow::multipart::message multipart{req};
+                if (multipart.parts.empty() || multipart.parts.size() > importing::ImportService::max_files)
+                    return json_err(400, "expected 1..1000 multipart files");
+                std::vector<importing::ImportFile> files;
+                for (const auto& part : multipart.parts) {
+                    const auto header = part.headers.find("Content-Disposition");
+                    if (header == part.headers.end()) throw std::invalid_argument("missing file disposition");
+                    const auto filename = header->second.params.find("filename");
+                    if (filename == header->second.params.end()) throw std::invalid_argument("missing filename");
+                    const auto path = impl_->import_service->stage_upload(filename->second, part.body);
+                    staged.push_back(path);
+                    files.push_back({util::path_to_utf8(path), filename->second});
+                }
+                const auto batch = impl_->import_service->submit(std::move(files), "upload", "",
+                    req.url_params.get("relinkTrackId") ? req.url_params.get("relinkTrackId") : "");
+                staged.clear(); // Journal/worker now owns cleanup.
+                auto response = json_ok(json(batch));
+                response.code = 202;
+                return response;
+            } catch (const std::exception& e) {
+                for (const auto& path : staged) impl_->import_service->discard_upload(path);
+                if (dynamic_cast<const std::length_error*>(&e)) return json_err(429, e.what());
+                if (dynamic_cast<const std::invalid_argument*>(&e)) return json_err(400, e.what());
+                return json_err(500, e.what());
+            }
+        });
+
+    CROW_ROUTE(app, "/api/plus/imports/<string>").methods(crow::HTTPMethod::Get)
+        ([this](const std::string& id) {
+            if (!impl_->import_service) return json_err(503, "library unavailable");
+            const auto batch = impl_->import_service->get(id);
+            return batch ? json_ok(json(*batch)) : json_err(404, "import batch not found");
+        });
+
+    CROW_ROUTE(app, "/api/plus/imports/<string>/cancel").methods(crow::HTTPMethod::Post)
+        ([this](const std::string& id) {
+            if (!impl_->import_service) return json_err(503, "library unavailable");
+            try {
+                const auto batch = impl_->import_service->cancel(id);
+                return batch ? json_ok(json(*batch)) : json_err(404, "import batch not found");
+            } catch (const std::exception& e) { return json_err(500, e.what()); }
+        });
+
+    CROW_ROUTE(app, "/api/plus/library/maintenance").methods(crow::HTTPMethod::Get)
+        ([this] {
+            if (!impl_->library_maintenance) return json_err(503, "library unavailable");
+            return json_ok(impl_->library_maintenance->status());
+        });
+    CROW_ROUTE(app, "/api/plus/library/maintenance").methods(crow::HTTPMethod::Post)
+        ([this](const crow::request& req) {
+            if (!impl_->library_maintenance) return json_err(503, "library unavailable");
+            if (req.body.size() > 1024 * 1024) return json_err(413, "request too large");
+            try {
+                const auto body = json::parse(req.body);
+                const auto operation = body.at("operation").get<std::string>();
+                if (operation == "cleanup" && !body.value("confirm", false)) return json_err(400, "cleanup requires explicit confirm and asset selection");
+                auto response = json_ok(impl_->library_maintenance->start(operation,
+                    body.value("assets", std::vector<std::string>{})));
+                response.code = 202; return response;
+            } catch (const json::exception& e) { return json_err(400, e.what()); }
+            catch (const std::invalid_argument& e) { return json_err(400, e.what()); }
+            catch (const std::exception& e) { return json_err(409, e.what()); }
+        });
+    CROW_ROUTE(app, "/api/plus/library/recovery").methods(crow::HTTPMethod::Get)
+        ([this] {
+            json backups = json::array();
+            if (fs::is_directory(cfg_.plus_library_dir)) for (const auto& entry : fs::directory_iterator(cfg_.plus_library_dir)) {
+                const auto name = util::path_to_utf8(entry.path().filename());
+                if (entry.is_regular_file() && name.starts_with("catalog.") && name.ends_with(".json")) backups.push_back(name);
+            }
+            return json_ok(json{{"available", impl_->library_service != nullptr}, {"error", cfg_.plus_storage_error}, {"backups", backups}});
+        });
+    CROW_ROUTE(app, "/api/plus/library/recovery").methods(crow::HTTPMethod::Post)
+        ([this](const crow::request& req) {
+            if (impl_->library_service) return json_err(409, "stop normal library access before recovering catalog");
+            if (cfg_.plus_library_dir.empty()) return json_err(503, "data directory unavailable");
+            if (req.body.size() > 1024 * 1024) return json_err(413, "recovery request too large");
+            try {
+                const auto body = json::parse(req.body);
+                if (!body.value("confirm", false)) return json_err(400, "recovery requires explicit confirmation");
+                const auto action = body.at("action").get<std::string>();
+                json catalog;
+                if (action == "reset") catalog = {{"schemaVersion", 1}, {"tracks", json::array()}};
+                else if (action == "restore") {
+                    const auto name = body.at("backup").get<std::string>();
+                    if (!name.starts_with("catalog.") || !name.ends_with(".json") || util::utf8_to_path(name).has_parent_path() || name.find(':') != std::string::npos || name.find('\0') != std::string::npos)
+                        return json_err(400, "invalid backup name");
+                    const auto path = cfg_.plus_library_dir / util::utf8_to_path(name);
+                    if (fs::is_symlink(path)) return json_err(400, "symlink backup forbidden");
+                    library::JsonTrackRepository validated(path, cfg_.plus_data_dir);
+                    catalog = util::read_bounded_json(path, 64ull * 1024 * 1024);
+                } else return json_err(400, "action must be reset or restore");
+                library::backup_corrupt_catalog(cfg_.plus_library_dir / "catalog.json");
+                util::atomic_write_json(cfg_.plus_library_dir / "catalog.json", catalog);
+                return json_ok(json{{"restart_required", true}, {"assets_preserved", true}});
+            } catch (const std::exception& e) { return json_err(400, e.what()); }
+        });
+    CROW_ROUTE(app, "/api/plus/analysis/jobs").methods(crow::HTTPMethod::Get)
+        ([this] {
+            if (!impl_->analysis_scheduler) return json_err(503, "analysis scheduler unavailable");
+            return json_ok(json{{"jobs", impl_->analysis_scheduler->jobs()}});
+        });
+    CROW_ROUTE(app, "/api/plus/analysis/jobs").methods(crow::HTTPMethod::Post)
+        ([this](const crow::request& req) {
+            if (!impl_->analysis_scheduler || !impl_->library_service) return json_err(503, "analysis unavailable");
+            if (req.body.size() > 1024 * 1024) return json_err(413, "analysis request too large");
+            try {
+                const auto body = json::parse(req.body);
+                const auto track = impl_->library_service->find(body.at("track_id").get<std::string>());
+                if (!track) return json_err(404, "track not found");
+                auto response = json_ok(json(impl_->analysis_scheduler->enqueue(*track, body.at("provider").get<std::string>())));
+                response.code = 202; return response;
+            } catch (const std::exception& e) { return json_err(400, e.what()); }
+        });
+    CROW_ROUTE(app, "/api/plus/analysis/tracks/<string>").methods(crow::HTTPMethod::Get)
+        ([this](const std::string& id) {
+            if (!impl_->analysis_repository) return json_err(503, "analysis repository unavailable");
+            try {
+                const auto record = impl_->analysis_repository->find(id);
+                return record ? json_ok(*record) : json_err(404, "analysis absent");
+            } catch (const std::exception& e) { return json_err(400, e.what()); }
+        });
     // ---- Health ----
     CROW_ROUTE(app, "/api/health").methods(crow::HTTPMethod::Get)
         ([] {

@@ -76,6 +76,8 @@ const std::vector<ServerConfig::Field>& ServerConfig::schema() {
          "How often meters update, in Hz. Each screen can choose a lower rate."},
         {"maxUploadMb", "--max-upload-mb", Kind::Int, 1, 8192, Applies::Restart,
          "Largest file that can be uploaded, in MiB."},
+        {"plusDataDir", "LIVEPLAY_PLUS_DATA_DIR", Kind::Text, 0, 0, Applies::Restart,
+         "Plus data directory override for portable installations."},
 
         {"mixSampleRate", "--mix-sample-rate", Kind::Int, 8000, 192000, Applies::Restart,
          "Sample rate the mixer runs at."},

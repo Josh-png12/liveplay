@@ -270,14 +270,14 @@ function liveSection<T extends object>(
       // A switch is a discrete press, not a gesture: there is no later event to
       // re-arm a settle timer, so a settled write would never arrive.
       hold = false;
-      emit('patch', props.bus!.id, { dsp: { [key]: next } } as Partial<Bus>);
+      emit('patch', props.bus!.id, { dsp: { [key]: next } } as unknown as Partial<Bus>);
       return;
     }
     settle = setTimeout(() => {
       settle = null;
       hold   = false;
       emit('patch', props.bus!.id,
-           { dsp: { [key]: local.value ?? next } } as Partial<Bus>);
+           { dsp: { [key]: local.value ?? next } } as unknown as Partial<Bus>);
     }, 250);
   }
 

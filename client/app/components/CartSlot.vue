@@ -151,7 +151,7 @@
 
             <!-- Ducking behavior -->
             <span
-              v-if="item.duckingBehavior?.mode === 'duck-others'"
+              v-if="item.type === 'audio' && item.duckingBehavior?.mode === 'duck-others'"
               class="material-symbols-rounded behavior-icon"
               :title="t('behaviors.duckingOthers')"
             >volume_down</span>

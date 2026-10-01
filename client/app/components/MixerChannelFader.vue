@@ -202,7 +202,7 @@ const emit = defineEmits<{
    * the curve sat still while the knob moved and then jumped once it was let
    * go, which reads as a broken display rather than a deliberate delay.
    */
-  (e: 'dsp-live', dsp: BusDsp): void;
+  (e: 'dsp-live', dsp: Partial<BusDsp>): void;
 }>();
 
 const { t } = useLocalization();

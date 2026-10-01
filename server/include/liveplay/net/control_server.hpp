@@ -120,6 +120,11 @@ struct ControlServerConfig {
     std::size_t   meter_broadcast_hz = 30;
     std::size_t   max_upload_bytes   = 256ull * 1024 * 1024;   // 256 MiB
 
+    // Optional server-owned LivePlay+ library. Never placed in a project folder.
+    std::filesystem::path plus_library_dir;
+    std::filesystem::path plus_data_dir;
+    std::string plus_storage_error;
+
     // Directories the filesystem API may reach: /api/fs/list, /api/fs/mkdir,
     // /api/metadata, /api/copy_to_media, the waveform readers and the project
     // load/export/import paths. A request naming a path outside every root is

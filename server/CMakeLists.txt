@@ -23,6 +23,13 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Export compile_commands.json for clangd / IDE integration.
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+set(LIVEPLAY_MSVC_INCLUDE_PREFIX "" CACHE STRING "Optional exact /showIncludes prefix for localized MSVC/Ninja environments")
+if(MSVC AND LIVEPLAY_MSVC_INCLUDE_PREFIX)
+    # Some UTF-8 shells cause CMake's localized prefix probe to be decoded
+    # incorrectly. Override only when needed; incorrect dependency detection
+    # otherwise leaves stale objects after header/model changes.
+    set(CMAKE_CL_SHOWINCLUDES_PREFIX "${LIVEPLAY_MSVC_INCLUDE_PREFIX}")
+endif()
 
 # ---------------------------------------------------------------------------
 # Compile options
@@ -158,6 +165,15 @@ add_executable(liveplay-server
     # Milestone 4 — metadata + waveform
     src/meta/metadata.cpp
     src/meta/waveform.cpp
+
+    # LivePlay+ library: independent from project state and real-time rendering.
+    src/library/data_directory.cpp
+        src/library/maintenance.cpp
+        src/analysis/analysis.cpp
+        src/library/atomic_json.cpp
+    src/library/track_repository.cpp
+    src/library/library_service.cpp
+    src/import/import_service.cpp
 )
 
 target_include_directories(liveplay-server
@@ -309,6 +325,63 @@ if(LIVEPLAY_BUILD_TESTS)
         PRIVATE liveplay_miniaudio Threads::Threads
     )
     add_test(NAME waveform COMMAND liveplay-waveform-tests)
+
+    add_executable(liveplay-library-tests
+        tests/library_test.cpp
+        tests/plus_foundation_test.cpp
+        src/library/data_directory.cpp
+        src/library/maintenance.cpp
+        src/analysis/analysis.cpp
+        src/library/atomic_json.cpp
+        src/library/track_repository.cpp
+        src/library/library_service.cpp
+        src/import/import_service.cpp
+        src/meta/metadata.cpp
+        src/logger.cpp
+    )
+    target_include_directories(liveplay-library-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(liveplay-library-tests PRIVATE
+        nlohmann_json::nlohmann_json liveplay_miniaudio Threads::Threads)
+    if(TARGET unofficial-sodium::sodium)
+        target_link_libraries(liveplay-library-tests PRIVATE unofficial-sodium::sodium)
+    elseif(TARGET sodium)
+        target_link_libraries(liveplay-library-tests PRIVATE sodium)
+    endif()
+    if(TARGET TagLib::tag)
+        target_link_libraries(liveplay-library-tests PRIVATE TagLib::tag)
+    elseif(TARGET TagLib::TagLib)
+        target_link_libraries(liveplay-library-tests PRIVATE TagLib::TagLib)
+    elseif(TARGET unofficial::taglib::tag)
+        target_link_libraries(liveplay-library-tests PRIVATE unofficial::taglib::tag)
+    endif()
+    add_executable(liveplay-library-benchmark
+        tests/library_benchmark.cpp
+        src/library/data_directory.cpp
+        src/library/maintenance.cpp
+        src/analysis/analysis.cpp
+        src/library/atomic_json.cpp
+        src/library/track_repository.cpp
+        src/library/library_service.cpp
+        src/import/import_service.cpp
+        src/meta/metadata.cpp
+        src/logger.cpp
+    )
+    target_include_directories(liveplay-library-benchmark PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(liveplay-library-benchmark PRIVATE
+        nlohmann_json::nlohmann_json liveplay_miniaudio Threads::Threads)
+    if(TARGET unofficial-sodium::sodium)
+        target_link_libraries(liveplay-library-benchmark PRIVATE unofficial-sodium::sodium)
+    elseif(TARGET sodium)
+        target_link_libraries(liveplay-library-benchmark PRIVATE sodium)
+    endif()
+    if(TARGET TagLib::tag)
+        target_link_libraries(liveplay-library-benchmark PRIVATE TagLib::tag)
+    elseif(TARGET TagLib::TagLib)
+        target_link_libraries(liveplay-library-benchmark PRIVATE TagLib::TagLib)
+    elseif(TARGET unofficial::taglib::tag)
+        target_link_libraries(liveplay-library-benchmark PRIVATE unofficial::taglib::tag)
+    endif()
+    add_test(NAME library COMMAND liveplay-library-tests)
 endif()
 
 # ---------------------------------------------------------------------------

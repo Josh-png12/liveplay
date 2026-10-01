@@ -2,6 +2,8 @@
 
 Scope: the repository's 2.5.0 implementation. Source is authoritative; these findings describe code paths, not a live penetration test or a guarantee about every malformed input.
 
+LivePlay+ Phase 1 and Phase 1.5 add fourteen HTTP registrations/method-path pairs and three shared schemas. The current inventory check reports 129 application registrations, 136 application method/path pairs and 137 documented pairs including the Crow static route, with 31 shared schemas; WebSocket counts are unchanged. The baseline table below remains the original 2.5.0 audit. See [library/import implementation](LIBRARY_IMPORT.md) for the extension contract and validation.
+
 ## Coverage
 
 | Surface | Discovered | Documented |
