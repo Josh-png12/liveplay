@@ -5424,6 +5424,19 @@
       "errors": [["401", "Authentication required when enabled"], ["404", "Track not found"], ["503", "Library disabled or invalid store"]]
     },
     {
+      "methods": ["GET", "POST"],
+      "path": "/api/plus/library/tracks/<string>/audio-proxy",
+      "title": "Read or queue a regenerable PCM audio proxy",
+      "category": "LivePlay+ media",
+      "auth": "Operator",
+      "apiToken": "No",
+      "fields": [["id", "string (path)", "Yes", "-", "MP4 library track identity."]],
+      "request": null,
+      "response": {"track_id": "track_...", "status": "queued", "path": "", "cache_key": "sha256:...:pcm-s16le:48000:2"},
+      "notes": "The original MP4 is never modified. FFmpeg produces a cacheable 48 kHz stereo PCM WAV for the existing AudioEngine; background work pauses in Performance Mode during playback.",
+      "errors": [["401", "Authentication required when enabled"], ["404", "Track not found"], ["503", "Audio proxy unavailable"]]
+    },
+    {
       "methods": ["PATCH"],
       "path": "/api/plus/library/tracks/<string>/tags",
       "title": "Update manual event tags for a library track",
@@ -8000,6 +8013,13 @@
           "Response and PATCH",
           "{}",
           "Manual event metadata: energy 0..5, language, country, genre, event_roles and school_approved."
+        ],
+        [
+          "media",
+          "object",
+          "Response only",
+          "audio defaults",
+          "Optional media facts: media_type, container, audio_codec, video_codec, has_audio, has_video, width, height, frame_rate, duration_ms, audio_channels, sample_rate and regenerable audio_proxy_path."
         ]
       ]
     },

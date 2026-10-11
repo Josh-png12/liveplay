@@ -15,7 +15,7 @@
     "generate": "cross-env NODE_ENV=production nuxt generate",
     "preview": "nuxt preview",
     "typecheck": "nuxt prepare && vue-tsc --noEmit",
-    "test": "node tests/window-bounds-tests.js && node tests/settings-form-placement-tests.js && node tests/mixer-regression-tests.js && node tests/library-tests.js"
+    "test": "node tests/window-bounds-tests.js && node tests/settings-form-placement-tests.js && node tests/mixer-regression-tests.js && node tests/library-tests.js && node tests/video-output-tests.js"
   },
   "keywords": [
     "electron",

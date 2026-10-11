@@ -39,6 +39,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   // and the map is the other half of what the Audio pane's output target and
   // LTC picker are talking about.
   { id: 'outputs',  icon: 'settings_input_hdmi', labelKey: 'settings.sectionOutputs' },
+  { id: 'event-hardware', icon: 'videocam', labelKey: 'settings.sectionEventHardware' },
   { id: 'keyboard', icon: 'keyboard',       labelKey: 'settings.sectionKeyboard' },
   { id: 'surfaces', icon: 'piano',          labelKey: 'settings.sectionSurfaces' },
   { id: 'project',  icon: 'folder_managed', labelKey: 'settings.sectionProject'  },

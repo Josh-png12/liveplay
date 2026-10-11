@@ -88,7 +88,7 @@ int main() {
         nlohmann::json loudness{{"integrated_lufs", lufs ? nlohmann::json(*lufs) : nlohmann::json(nullptr)},
             {"true_peak_dbtp", true_peak ? nlohmann::json(*true_peak) : nlohmann::json(nullptr)}, {"lra", nullptr}};
         nlohmann::json data{{"basic", basic}, {"loudness", loudness}};
-        if (lufs) data["recommended_gain_db"] = std::clamp(-16.0 - *lufs, -24.0, 24.0);
+        if (lufs) data["recommended_gain_db"] = std::clamp(-12.0 - *lufs, -12.0, 6.0);
         else data["recommended_gain_db"] = nullptr;
         std::cout << nlohmann::json{{"protocolVersion",1},{"type","result"},{"requestId",id},{"status","ok"},{"data",data}}.dump() << '\n';
     } catch (const std::exception& e) {

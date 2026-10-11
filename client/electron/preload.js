@@ -159,6 +159,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onCartPlayerWindowClosed: (callback) => replaceIpcListener('cart-player-window-closed', callback),
   onCartWindowProjectUpdate: (callback) => ipcRenderer.on('cart-window-project-update', callback),
 
+  videoOutput: {
+    open: (options) => ipcRenderer.invoke('video-output:open', options),
+    command: (command) => ipcRenderer.invoke('video-output:command', command),
+    close: () => ipcRenderer.invoke('video-output:close'),
+    identify: () => ipcRenderer.invoke('video-output:identify'),
+    status: () => ipcRenderer.invoke('video-output:status'),
+    onMetrics: (callback) => replaceIpcListener('video-output:metrics', (_e, metrics) => callback(metrics)),
+    onStatus: (callback) => replaceIpcListener('video-output:status', (_e, status) => callback(status)),
+  },
+
   // Mixer window — detach/attach. No project-data channel of its own: buses
   // and meters come over the renderer's own WebSocket, and the theme/meter
   // levels ride the cart window's project-data broadcast.

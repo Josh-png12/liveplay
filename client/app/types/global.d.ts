@@ -43,6 +43,7 @@ declare global {
       removeImportProgressListener: (callback: (event: any, data: { percentage: number; fileName: string }) => void) => void;
       getFilePath: (file: File) => string | null;
       checkFfmpeg: () => Promise<{ available: boolean; path: string | null }>;
+      selectImageFile?: () => Promise<string | null>;
       searchYouTube: (query: string) => Promise<Array<{
         id: string;
         title: string;
@@ -108,6 +109,15 @@ declare global {
       attachMixerWindow: () => void;
       onMixerWindowOpened: (callback: () => void) => void;
       onMixerWindowClosed: (callback: () => void) => void;
+      videoOutput?: {
+        open: (options?: { displayId?: number; fullscreen?: boolean }) => Promise<any>;
+        command: (command: any) => Promise<{ ok: boolean; error?: string }>;
+        close: () => Promise<boolean>;
+        identify: () => Promise<any[]>;
+        status: () => Promise<any>;
+        onMetrics: (callback: (metrics: any) => void) => void;
+        onStatus: (callback: (status: any) => void) => void;
+      };
       // UI mode ("show mode") sync across windows
       broadcastUiMode: (mode: 'edit' | 'playback') => void;
       onUiModeSet: (callback: (event: any, mode: 'edit' | 'playback') => void) => void;

@@ -1,5 +1,6 @@
 #include "liveplay/import/import_service.hpp"
 #include "liveplay/meta/metadata.hpp"
+#include "liveplay/library/media_service.hpp"
 #include "liveplay/util/atomic_json.hpp"
 #include "liveplay/util/unicode_path.hpp"
 #include <sodium.h>
@@ -47,8 +48,10 @@ std::string extension(const fs::path& p) {
     });
     static const std::array supported{".wav", ".mp3", ".flac", ".ogg", ".m4a",
         ".aac", ".aif", ".aiff", ".opus", ".wma"};
-    if (std::find(supported.begin(), supported.end(), ext) == supported.end())
-        throw std::invalid_argument("unsupported audio file extension");
+    static const std::array video_supported{".mp4"};
+    if (std::find(supported.begin(), supported.end(), ext) == supported.end() &&
+        std::find(video_supported.begin(), video_supported.end(), ext) == video_supported.end())
+        throw std::invalid_argument("unsupported media file extension");
     return ext;
 }
 bool valid_id(const std::string& id) {
@@ -330,10 +333,18 @@ library::TrackInsert ImportService::import_one(const ImportFile& file, const std
             return {*previous, false};
         }
         auto stamp = Clock::now();
+        library::TrackMedia media;
+        const bool is_mp4 = ext == ".mp4";
+        if (is_mp4) media = library::probe_media_file(stage);
         const auto metadata = meta::read_metadata(stage);
         timings["metadata_ms"] = elapsed(stamp);
-        if (!metadata.valid || metadata.duration.count() <= 0)
-            throw std::runtime_error("cannot read valid audio metadata");
+        if ((!is_mp4 && (!metadata.valid || metadata.duration.count() <= 0)) ||
+            (is_mp4 && media.duration_ms <= 0))
+            throw std::runtime_error("cannot read valid media metadata");
+        if (is_mp4 && media.has_video && media.video_codec != "h264")
+            throw std::runtime_error("unsupported video codec; only H.264 MP4 is supported");
+        if (is_mp4 && media.has_audio && media.audio_codec != "aac")
+            throw std::runtime_error("unsupported MP4 audio codec; only AAC is supported");
         if (interrupted(batch_id)) throw std::runtime_error("import interrupted");
         const auto asset = assets_ / (content_hash.substr(7) + ext);
         // Recover an orphan from a crash before catalog commit by replacing it
@@ -347,15 +358,16 @@ library::TrackInsert ImportService::import_one(const ImportFile& file, const std
             ? util::path_to_utf8(source.stem()) : metadata.title;
         track.artist = metadata.artist;
         track.album = metadata.album;
-        track.duration_ms = metadata.duration.count();
+        track.duration_ms = is_mp4 ? media.duration_ms : metadata.duration.count();
         track.format = ext.substr(1);
-        track.sample_rate = metadata.sample_rate;
-        track.channels = metadata.channels;
+        track.sample_rate = is_mp4 ? media.sample_rate : metadata.sample_rate;
+        track.channels = is_mp4 ? media.audio_channels : metadata.channels;
         track.asset_path = util::path_to_utf8(asset);
         track.content_hash = content_hash;
         track.size_bytes = copied;
         track.import_origin = origin;
         track.imported_at = utc_now();
+        if (is_mp4) track.media = std::move(media);
         try {
             stamp = Clock::now();
             const auto registered = library_.register_track(track);

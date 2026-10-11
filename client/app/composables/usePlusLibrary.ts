@@ -75,7 +75,7 @@ export function usePlusLibrary() {
       // Bound multipart bodies including header overhead; requests yield to the UI.
       const groups: File[][] = []; let group: File[] = [], bytes = 0;
       for (const file of files) {
-        if (!/\.(wav|mp3|flac|ogg|m4a|aac|aif|aiff|opus|wma)$/i.test(file.name) || file.size === 0 || file.size + 4096 > limit) {
+        if (!/\.(wav|mp3|flac|ogg|m4a|aac|aif|aiff|opus|wma|mp4)$/i.test(file.name) || file.size === 0 || file.size + 4096 > limit) {
           localFailures.value.push({name: file.name, error: t('plusLibrary.invalidFile')}); continue;
         }
         if (group.length >= 100 || bytes + file.size + 4096 > limit) { groups.push(group); group = []; bytes = 0; }
@@ -129,6 +129,8 @@ export function usePlusLibrary() {
   async function getTrackWaveform(trackId: string) {
     return request<any>(`/library/tracks/${encodeURIComponent(trackId)}/waveform`);
   }
+  async function requestAudioProxy(trackId: string) { return request<any>(`/library/tracks/${encodeURIComponent(trackId)}/audio-proxy`, { method: 'POST', body: '{}' }); }
+  async function getAudioProxy(trackId: string) { return request<any>(`/library/tracks/${encodeURIComponent(trackId)}/audio-proxy`); }
   async function updateTrackTags(trackId: string, tags: any) {
     const updated = await request<PlusTrack>(`/library/tracks/${encodeURIComponent(trackId)}/tags`, { method: 'PATCH', body: JSON.stringify(tags) });
     const index = tracks.value.findIndex(track => track.id === trackId); if (index >= 0) tracks.value[index] = updated;
@@ -138,5 +140,5 @@ export function usePlusLibrary() {
     return request<{ provider: string; tracks: PlusTrack[] }>('/recommendations', { method: 'POST', body: JSON.stringify(requestBody) });
   }
   onBeforeUnmount(() => { disposed = true; clearTimeout(timer); for (const c of controllers) c.abort(); });
-  return { tracks, batches, capabilities, error, uploading, loading, maintenance, recovery, localFailures, initialize, refresh, importFiles, cancel, retry, maintain, recover, setPerformance, requestTrackWaveform, getTrackWaveform, updateTrackTags, recommend };
+  return { tracks, batches, capabilities, error, uploading, loading, maintenance, recovery, localFailures, initialize, refresh, importFiles, cancel, retry, maintain, recover, setPerformance, requestTrackWaveform, getTrackWaveform, requestAudioProxy, getAudioProxy, updateTrackTags, recommend };
 }

@@ -25,9 +25,11 @@
 #include "liveplay/library/data_directory.hpp"
 #include "liveplay/library/maintenance.hpp"
 #include "liveplay/library/waveform_service.hpp"
+#include "liveplay/library/media_service.hpp"
 #include "liveplay/library/recommendations.hpp"
 #include "liveplay/show/transition_engine.hpp"
 #include "liveplay/analysis/analysis.hpp"
+#include "liveplay/analysis/loudness_policy.hpp"
 #include "liveplay/analysis/worker_adapter.hpp"
 #include "liveplay/util/atomic_json.hpp"
 #include "liveplay/import/import_service.hpp"
@@ -48,6 +50,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <charconv>
 #include <condition_variable>
@@ -82,6 +85,28 @@ static bool plus_feature_enabled(const char* name, bool fallback) {
     if (!value) return fallback;
     const std::string v(value);
     return !(v == "0" || v == "false" || v == "off" || v == "no");
+}
+
+// A small, explicitly requested test signal for the hardware panel. It is
+// generated off the audio callback and loaded through the existing engine.
+static fs::path write_hardware_test_tone(const fs::path& root, const std::string& channel, std::uint32_t rate) {
+    fs::create_directories(root);
+    const auto target = root / ("hardware-test-" + channel + ".wav");
+    if (fs::is_regular_file(target)) return target;
+    constexpr std::uint16_t channels = 2, bits = 16;
+    const std::uint32_t frames = rate * 2;
+    const std::uint32_t data_bytes = frames * channels * (bits / 8);
+    std::ofstream out(target, std::ios::binary);
+    auto u16 = [&out](std::uint16_t n) { out.put(char(n)); out.put(char(n >> 8)); };
+    auto u32 = [&out](std::uint32_t n) { for (int i = 0; i < 4; ++i) out.put(char(n >> (i * 8))); };
+    out.write("RIFF", 4); u32(36 + data_bytes); out.write("WAVEfmt ", 8); u32(16); u16(1); u16(channels); u32(rate);
+    u32(rate * channels * (bits / 8)); u16(channels * (bits / 8)); u16(bits); out.write("data", 4); u32(data_bytes);
+    for (std::uint32_t i = 0; i < frames; ++i) {
+        const auto v = static_cast<std::int16_t>(std::sin(2.0 * 3.141592653589793 * 440.0 * i / rate) * 0.22 * 32767.0);
+        const auto left = channel == "right" ? 0 : v, right = channel == "left" ? 0 : v;
+        u16(static_cast<std::uint16_t>(left)); u16(static_cast<std::uint16_t>(right));
+    }
+    return target;
 }
 
 // Forward declarations (definitions further down).
@@ -263,10 +288,12 @@ struct ControlServer::Impl {
     std::unique_ptr<library::LibraryService> library_service;
     std::unique_ptr<importing::ImportService> import_service;
     std::unique_ptr<library::LibraryMaintenance> library_maintenance;
-    std::unique_ptr<library::WaveformService> waveform_service;
+std::unique_ptr<library::WaveformService> waveform_service;
+std::unique_ptr<library::AudioProxyService> audio_proxy_service;
     std::unique_ptr<analysis::JsonTrackAnalysisRepository> analysis_repository;
     std::unique_ptr<analysis::AnalysisScheduler> analysis_scheduler;
     std::atomic<bool> performance_mode{true};
+    audio::CueId hardware_test_cue;
 
     // Caller holds ws_mutex. UserStore never calls back into the server while
     // holding its lock. Rejection sticks until onclose removes the connection.
@@ -1065,6 +1092,9 @@ ControlServer::ControlServer(audio::AudioEngine& engine,
             impl_->library_maintenance = std::make_unique<library::LibraryMaintenance>(*impl_->library_service, cfg_.plus_data_dir / "assets");
             impl_->waveform_service = std::make_unique<library::WaveformService>(
                 cfg_.plus_data_dir / "cache" / "waveforms", protect_audio);
+            impl_->audio_proxy_service = std::make_unique<library::AudioProxyService>(
+                cfg_.plus_data_dir / "cache" / "audio-proxies", protect_audio,
+                [library = impl_->library_service.get()](library::Track track) { library->update_metadata(track); });
         } catch (const std::exception& e) {
             // A corrupt/unwritable Plus store must not prevent a legacy show.
             Logger::error("LivePlay+ library unavailable: {}", e.what());
@@ -2194,6 +2224,7 @@ void ControlServer::install_routes() {
                     : json{{"basic", false}, {"loudness", false}, {"rhythm", false}, {"tonality", false}, {"structure", false}, {"semantic", false}, {"stems", false}}},
                 {"analysisAvailable", impl_->analysis_scheduler && impl_->analysis_scheduler->available()}, {"storageError", cfg_.plus_storage_error},
                 {"performanceMode", impl_->performance_mode.load(std::memory_order_relaxed)},
+                {"outputLimiterAvailable", true},
                 {"plus", json{
                     {"eventMvp", impl_->library_service != nullptr && plus_feature_enabled("LIVEPLAY_PLUS_EVENT_MVP", true)},
                     {"waveform", impl_->waveform_service != nullptr && plus_feature_enabled("LIVEPLAY_PLUS_WAVEFORM", true)},
@@ -2219,6 +2250,51 @@ void ControlServer::install_routes() {
                 return json_ok(json{{"enabled", impl_->performance_mode.load(std::memory_order_relaxed)}});
             } catch (const json::exception& e) { return json_err(400, e.what()); }
         });
+
+    // Only derived audio proxies live here. Original project media and Plus
+    // assets are deliberately outside this endpoint's deletion boundary.
+    CROW_ROUTE(app, "/api/plus/media-cache").methods(crow::HTTPMethod::Get)
+        ([this] {
+            if (!impl_->audio_proxy_service) return json_err(503, "media cache unavailable");
+            return json_ok(impl_->audio_proxy_service->cache_status());
+        });
+    CROW_ROUTE(app, "/api/plus/media-cache").methods(crow::HTTPMethod::Delete)
+        ([this] {
+            if (!impl_->audio_proxy_service) return json_err(503, "media cache unavailable");
+            std::string error;
+            if (!impl_->audio_proxy_service->clear_regenerable_cache(error)) return json_err(409, error);
+            return json_ok(json{{"cleared", true}});
+        });
+
+    CROW_ROUTE(app, "/api/plus/hardware/status").methods(crow::HTTPMethod::Get)
+        ([this] {
+            const auto stats = engine_.stats(false); const auto& config = engine_.config();
+            const auto master = engine_.read_master_meter(0);
+            json devices = json::array(); for (const auto& d : stats.device_stats) devices.push_back(json{{"name", d.name}, {"clock", d.is_clock}});
+            return json_ok(json{{"audioOutputDevice", devices.empty() ? "" : devices.front().value("name", "")},
+                {"sampleRate", config.mix_sample_rate}, {"bufferSize", stats.device_period_frames},
+                {"callbackStatus", stats.underruns == 0 ? "healthy" : "underrun_detected"}, {"audioUnderruns", stats.underruns},
+                {"callbackOverruns", stats.render_block_us_max > stats.block_budget_us ? 1 : 0},
+                {"renderBlockUsMax", stats.render_block_us_max}, {"blockBudgetUs", stats.block_budget_us}, {"devices", devices},
+                {"masterPeakDbfs", master.peak_db}, {"masterRmsDbfs", master.rms_db}, {"masterTruePeakDbtp", master.true_peak_db},
+                {"outputGainDb", engine_.master_gain_db()}, {"limiterGainReductionDb", engine_.read_master_gain_reduction_db(0)},
+                {"outputLimiterAvailable", true}, {"outputLimiterEnabled", engine_.limiter_enabled()}});
+        });
+    CROW_ROUTE(app, "/api/plus/hardware/test-audio").methods(crow::HTTPMethod::Post)
+        ([this](const crow::request& req) {
+            try {
+                const auto body = req.body.empty() ? json::object() : json::parse(req.body);
+                const auto channel = body.value("channel", "stereo");
+                if (channel != "stereo" && channel != "left" && channel != "right") return json_err(400, "channel must be stereo, left or right");
+                if (!impl_->hardware_test_cue.empty()) engine_.unload_cue(impl_->hardware_test_cue);
+                const auto file = write_hardware_test_tone(cfg_.plus_data_dir / "cache" / "hardware-test", channel, engine_.config().mix_sample_rate);
+                impl_->hardware_test_cue = engine_.load_cue(file);
+                engine_.play(impl_->hardware_test_cue);
+                return json_ok(json{{"playing", true}, {"channel", channel}});
+            } catch (const std::exception& e) { return json_err(500, e.what()); }
+        });
+    CROW_ROUTE(app, "/api/plus/hardware/test-audio/stop").methods(crow::HTTPMethod::Post)
+        ([this] { if (!impl_->hardware_test_cue.empty()) engine_.stop(impl_->hardware_test_cue); return json_ok(json{{"stopped", true}}); });
 
     CROW_ROUTE(app, "/api/plus/library/tracks").methods(crow::HTTPMethod::Get)
         ([this](const crow::request& req) {
@@ -2258,8 +2334,28 @@ void ControlServer::install_routes() {
             if (!impl_->library_service || !impl_->waveform_service) return json_err(503, "waveform unavailable");
             const auto track = impl_->library_service->find(id);
             if (!track) return json_err(404, "track not found");
+            if (track->format == "mp4" && track->media.audio_proxy_path.empty()) {
+                if (!impl_->audio_proxy_service) return json_err(503, "audio proxy unavailable");
+                impl_->audio_proxy_service->request(*track);
+                return json_ok(json{{"status", "waiting_for_proxy"}, {"proxy", impl_->audio_proxy_service->status(*track)}});
+            }
             impl_->waveform_service->request(*track);
             auto response = json_ok(impl_->waveform_service->status(*track)); response.code = 202; return response;
+        });
+    CROW_ROUTE(app, "/api/plus/library/tracks/<string>/audio-proxy").methods(crow::HTTPMethod::Get)
+        ([this](const std::string& id) {
+            if (!impl_->library_service || !impl_->audio_proxy_service) return json_err(503, "audio proxy unavailable");
+            const auto track = impl_->library_service->find(id);
+            if (!track) return json_err(404, "track not found");
+            return json_ok(impl_->audio_proxy_service->status(*track));
+        });
+    CROW_ROUTE(app, "/api/plus/library/tracks/<string>/audio-proxy").methods(crow::HTTPMethod::Post)
+        ([this](const std::string& id) {
+            if (!impl_->library_service || !impl_->audio_proxy_service) return json_err(503, "audio proxy unavailable");
+            const auto track = impl_->library_service->find(id);
+            if (!track) return json_err(404, "track not found");
+            impl_->audio_proxy_service->request(*track);
+            auto response = json_ok(impl_->audio_proxy_service->status(*track)); response.code = 202; return response;
         });
     CROW_ROUTE(app, "/api/plus/library/tracks/<string>/tags").methods(crow::HTTPMethod::Patch)
         ([this](const crow::request& req, const std::string& id) {
@@ -2451,8 +2547,12 @@ void ControlServer::install_routes() {
             if (req.body.size() > 1024 * 1024) return json_err(413, "analysis request too large");
             try {
                 const auto body = json::parse(req.body);
-                const auto track = impl_->library_service->find(body.at("track_id").get<std::string>());
+                auto track = impl_->library_service->find(body.at("track_id").get<std::string>());
                 if (!track) return json_err(404, "track not found");
+                // Reuse the decoded proxy when available. The Track identity/hash
+                // remains the original immutable media asset.
+                if (!track->media.audio_proxy_path.empty() && fs::is_regular_file(util::utf8_to_path(track->media.audio_proxy_path)))
+                    track->asset_path = track->media.audio_proxy_path;
                 auto response = json_ok(json(impl_->analysis_scheduler->enqueue(*track, body.at("provider").get<std::string>())));
                 response.code = 202; return response;
             } catch (const std::exception& e) { return json_err(400, e.what()); }
@@ -2463,6 +2563,38 @@ void ControlServer::install_routes() {
             try {
                 const auto record = impl_->analysis_repository->find(id);
                 return record ? json_ok(*record) : json_err(404, "analysis absent");
+            } catch (const std::exception& e) { return json_err(400, e.what()); }
+        });
+    // Event Loudness never changes source files. It turns a completed, cached
+    // analysis into an operator-approved metadata gain, bounded by both the
+    // configured range and the analysed true-peak ceiling.
+    CROW_ROUTE(app, "/api/plus/loudness/prepare").methods(crow::HTTPMethod::Post)
+        ([this](const crow::request& req) {
+            if (!impl_->library_service || !impl_->analysis_repository) return json_err(503, "library analysis unavailable");
+            try {
+                const auto body = json::parse(req.body);
+                const auto action = body.value("action", "preview");
+                const auto ids = body.at("track_ids").get<std::vector<std::string>>();
+                if (ids.empty() || ids.size() > 500) return json_err(400, "track_ids must contain 1..500 tracks");
+                const auto settings = body.value("settings", json::object());
+                const double target = settings.value("target_lufs", -12.0), maximum = settings.value("max_positive_gain_db", 6.0), minimum = settings.value("max_negative_gain_db", -12.0), ceiling = settings.value("true_peak_ceiling_dbtp", -1.0);
+                if (!std::isfinite(target) || !std::isfinite(maximum) || !std::isfinite(minimum) || !std::isfinite(ceiling) || maximum < 0 || minimum > 0 || ceiling > 0 || maximum > 24 || minimum < -48) return json_err(400, "invalid loudness safety settings");
+                json values = json::array();
+                for (const auto& id : ids) {
+                    auto track = impl_->library_service->find(id); if (!track) { values.push_back({{"track_id",id},{"status","missing"}}); continue; }
+                    if (action == "reset") { track->prepared_gain_db.reset(); impl_->library_service->update_metadata(*track); values.push_back({{"track_id",id},{"status","reset"}}); continue; }
+                    const auto analysis = impl_->analysis_repository->find(id);
+                    const auto lufs = analysis && analysis->contains("loudness") ? (*analysis)["loudness"].value("integrated_lufs", json(nullptr)) : json(nullptr);
+                    const auto peak = analysis && analysis->contains("loudness") ? (*analysis)["loudness"].value("true_peak_dbtp", json(nullptr)) : json(nullptr);
+                    if (lufs.is_null() || !lufs.is_number()) { values.push_back({{"track_id",id},{"status","analysis_required"}}); continue; }
+                    const analysis::LoudnessSafetySettings safety{target, maximum, minimum, ceiling};
+                    const auto preview = analysis::safe_loudness_gain(lufs.get<double>(), peak.is_number() ? std::optional<double>(peak.get<double>()) : std::nullopt, safety);
+                    if (!preview.valid) { values.push_back({{"track_id",id},{"status","unsafe"},{"current_lufs",lufs},{"recommended_gain_db",nullptr},{"estimated_true_peak_dbtp",nullptr},{"ceiling_dbtp",ceiling}}); continue; }
+                    const auto estimated = preview.estimated_true_peak_dbtp ? json(*preview.estimated_true_peak_dbtp) : json(nullptr);
+                    if (action == "apply") { track->prepared_gain_db = preview.gain_db; impl_->library_service->update_metadata(*track); }
+                    values.push_back({{"track_id",id},{"status",action == "apply" ? "applied" : "ready"},{"current_lufs",lufs},{"recommended_gain_db",preview.gain_db},{"estimated_true_peak_dbtp",estimated},{"ceiling_dbtp",ceiling}});
+                }
+                return json_ok(json{{"settings",{{"target_lufs",target},{"max_positive_gain_db",maximum},{"max_negative_gain_db",minimum},{"true_peak_ceiling_dbtp",ceiling}}},{"tracks",values}});
             } catch (const std::exception& e) { return json_err(400, e.what()); }
         });
     // ---- Health ----

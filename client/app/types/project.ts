@@ -77,8 +77,9 @@ export interface EventCueMetadata {
   fadeOutMs?: number;
   trackGainDb?: number;
   transition?: { type: 'cut' | 'fade' | 'crossfade'; durationMs: number };
-  preset?: 'sports-entry' | 'sports-exit' | 'background' | 'awards';
+  preset?: 'sports-entry' | 'sports-exit' | 'background' | 'awards' | 'event-outdoor';
   trackId?: string;
+  media?: { sourcePath: string; mediaType: 'audio' | 'video'; hasVideo: boolean; videoTransition?: 'cut' | 'fade-in' | 'fade-out' | 'fade-black' | 'crossfade' };
 }
 
 // Waveform data format (from the server's decoder, or legacy ffmpeg files)
@@ -459,6 +460,13 @@ export interface ProjectSettings {
   disableLimiter?: boolean;
   disableSilenceWarning?: boolean;
   autoSave?: boolean;
+  eventLoudness?: {
+    enabled?: boolean;
+    targetLufs?: number;
+    maxPositiveGainDb?: number;
+    maxNegativeGainDb?: number;
+    truePeakCeilingDbtp?: number;
+  };
 
   /**
    * Number shown for the first playlist item.

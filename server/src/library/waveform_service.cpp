@@ -54,7 +54,11 @@ void WaveformService::run() {
                 std::this_thread::sleep_for(std::chrono::milliseconds(250));
                 std::lock_guard lock(mutex_); if (stopping_) return;
             }
-            const auto wf = meta::compute_waveform(util::utf8_to_path(job.track.asset_path));
+            const auto decoded = !job.track.media.audio_proxy_path.empty() &&
+                fs::is_regular_file(util::utf8_to_path(job.track.media.audio_proxy_path))
+                ? util::utf8_to_path(job.track.media.audio_proxy_path)
+                : util::utf8_to_path(job.track.asset_path);
+            const auto wf = meta::compute_waveform(decoded);
             if (!wf.ok) throw std::runtime_error("waveform decode failed");
             nlohmann::json channels = nlohmann::json::array();
             for (const auto& channel : wf.channels) channels.push_back({{"peak", channel.peak}, {"rms", channel.rms}});

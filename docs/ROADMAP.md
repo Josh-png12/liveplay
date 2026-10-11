@@ -233,3 +233,13 @@ La siguiente fase recomendada es un proveedor básico offline aislado que sólo 
 ## Phase 1.7 — Event MVP
 
 Implemented as a narrow vertical slice: cached waveform requests, manual event tags, deterministic recommendations, optional FFmpeg basic loudness/peak analysis, cue editor with IN/OUT, presets, show-board phase groups, team/template scaffolding and emergency transport controls. It reuses the existing project item and audio engine contracts. BPM, key, beatgrid, AutoDJ planning, time stretching, stems, CLAP and AI remain explicitly deferred to Phase 2+.
+
+## Phase 1.8 — Media & Video Foundation
+
+Implemented: extensible media metadata, MP4 H.264/AAC probe, regenerable 48 kHz PCM audio proxy, cache-backed waveform reuse, optional audiovisual cue metadata and mute secondary video output synchronized to AudioEngine position. MOV, WebM and MKV remain unsupported until they pass the same probe/proxy/playback contract. No time stretching, beat sync, AutoDJ or ML was added.
+# Video Presentation & Hardware Release Candidate
+
+Video V1.1 visual transitions, idle output, display selection, display
+identification, hardware test, A/V diagnostics, cache controls and FFmpeg
+resolution are implemented. Physical Windows hardware validation remains a
+manual RC gate; advanced musical analysis and automation remain out of scope.

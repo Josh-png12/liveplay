@@ -1,14 +1,18 @@
 #include "liveplay/import/import_service.hpp"
 #include "liveplay/library/library_service.hpp"
+#include "liveplay/library/maintenance.hpp"
 #include "liveplay/util/atomic_json.hpp"
 #include "liveplay/util/unicode_path.hpp"
 #include "liveplay/analysis/worker_adapter.hpp"
+#include "liveplay/analysis/loudness_policy.hpp"
 #include <sodium.h>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <fstream>
 #include <future>
+#include <map>
 #include <thread>
 #if defined(_WIN32)
 #include <windows.h>
@@ -73,6 +77,21 @@ int main() {
         std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
     fs::create_directories(root);
     try {
+        const std::vector<std::pair<std::string,int>> loudness_fixtures{{"silent",0},{"low",400},{"normal",6000},{"loud",24000},{"transient",32000}};
+        std::map<std::string,std::string> fixture_hashes;
+        for (const auto& [name, amplitude] : loudness_fixtures) { const auto file = root / (name + ".wav"); wav(file, amplitude); fixture_hashes[name] = library::hash_asset(file); }
+        const analysis::LoudnessSafetySettings loudness{};
+        check(!analysis::safe_loudness_gain(-INFINITY, std::nullopt, loudness).valid, "silent track requires valid loudness analysis");
+        const auto low = analysis::safe_loudness_gain(-30.0, -12.0, loudness);
+        check(low.valid && std::abs(low.gain_db - 6.0) < 0.001, "low track is limited to +6 dB");
+        const auto normal = analysis::safe_loudness_gain(-12.0, -2.0, loudness);
+        check(normal.valid && std::abs(normal.gain_db) < 0.001, "normal track keeps unity gain");
+        const auto loud = analysis::safe_loudness_gain(4.0, 3.0, loudness);
+        check(loud.valid && std::abs(loud.gain_db + 12.0) < 0.001, "very loud track is limited to -12 dB");
+        check(!analysis::safe_loudness_gain(-12.0, 20.0, loudness).valid, "track that cannot meet true-peak ceiling within limits is rejected");
+        const auto transient = analysis::safe_loudness_gain(-20.0, -0.2, loudness);
+        check(transient.valid && std::abs(transient.gain_db + 0.8) < 0.001 && *transient.estimated_true_peak_dbtp <= -1.0, "transient peak caps positive normalization at ceiling");
+        check(std::all_of(loudness_fixtures.begin(), loudness_fixtures.end(), [&](const auto& fixture) { return fixture_hashes[fixture.first] == library::hash_asset(root / (fixture.first + ".wav")); }), "five synthetic loudness fixtures remain byte-identical");
         const auto catalog = root / "repository.json";
         {
             library::JsonTrackRepository repository(catalog);
@@ -83,7 +102,11 @@ int main() {
             check(process_lock_rejected(root / "catalog.lock"), "exclusive store lock rejects another process");
 #endif
             const auto t = record(root, 'a');
+            wav(util::utf8_to_path(t.asset_path), 1200); const auto source_hash = library::hash_asset(util::utf8_to_path(t.asset_path));
             check(service.register_track(t).inserted, "first insert is durable");
+            auto prepared = *service.find(t.id); prepared.prepared_gain_db = 3.5; service.update_metadata(prepared);
+            check(service.find(t.id)->prepared_gain_db == 3.5, "approved loudness gain persists");
+            check(library::hash_asset(util::utf8_to_path(t.asset_path)) == source_hash, "loudness preparation does not modify source file");
             auto renamed = t; renamed.title = "Changed";
             check(!service.register_track(renamed).inserted && service.find(t.id)->title == "Example",
                   "duplicate content preserves identity and original metadata");

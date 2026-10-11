@@ -170,6 +170,7 @@ add_executable(liveplay-server
     src/library/data_directory.cpp
     src/library/maintenance.cpp
     src/library/waveform_service.cpp
+    src/library/media_service.cpp
     src/library/recommendations.cpp
     src/analysis/analysis.cpp
         src/analysis/worker_adapter.cpp
@@ -342,6 +343,7 @@ if(LIVEPLAY_BUILD_TESTS)
         src/library/track_repository.cpp
         src/library/store_lock.cpp
         src/library/library_service.cpp
+        src/library/media_service.cpp
         src/import/import_service.cpp
         src/meta/metadata.cpp
         src/logger.cpp
@@ -371,6 +373,7 @@ if(LIVEPLAY_BUILD_TESTS)
         src/library/track_repository.cpp
         src/library/store_lock.cpp
         src/library/library_service.cpp
+        src/library/media_service.cpp
         src/import/import_service.cpp
         src/meta/metadata.cpp
         src/logger.cpp

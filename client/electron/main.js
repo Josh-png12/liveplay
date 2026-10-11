@@ -9,10 +9,14 @@ const YTDlpWrap = require('yt-dlp-wrap').default;
 const ffmpeg = require('fluent-ffmpeg');
 const { promisify } = require('util');
 const https = require('https');
+const { pathToFileURL } = require('url');
 const execPromise = promisify(exec);
 
 let ffmpegPath = null;
+let ffprobePath = null;
 let ffmpegAvailable = false;
+let ffmpegSource = 'unavailable';
+let ffprobeSource = 'unavailable';
 
 // ===========================================================================
 // LivePlay C++ server lifecycle
@@ -566,6 +570,9 @@ async function startLiveplayServer() {
     '--port',    String(cfg.localPort),
     '--pidfile', lockPath,
   ];
+  const serverEnv = { ...process.env };
+  if (ffmpegPath) serverEnv.LIVEPLAY_FFMPEG = ffmpegPath;
+  if (ffprobePath) serverEnv.LIVEPLAY_FFPROBE = ffprobePath;
   try {
     if (process.platform === 'win32') {
       // `cmd /c start "" /D "<cwd>" "<exe>" <args>` opens a visible console
@@ -582,6 +589,7 @@ async function startLiveplayServer() {
           stdio: 'ignore',
           windowsHide: false,
           detached: true,
+          env: serverEnv,
         },
       );
     } else if (process.platform === 'darwin') {
@@ -601,7 +609,7 @@ async function startLiveplayServer() {
       liveplayServerProc = spawn(
         'osascript',
         ['-e', appleScript],
-        { stdio: 'ignore', detached: true },
+        { stdio: 'ignore', detached: true, env: serverEnv },
       );
     } else {
       // Linux / other POSIX: spawn directly. If the user launched the
@@ -612,6 +620,7 @@ async function startLiveplayServer() {
         cwd: path.dirname(exePath),
         stdio: 'ignore',
         detached: true,
+        env: serverEnv,
       });
     }
   } catch (e) {
@@ -968,87 +977,26 @@ ipcMain.handle('liveplay-projects:recent-clear', () => {
   return list;
 });
 
-// Setup bundled ffmpeg - always use the bundled version to avoid
-// issues on OS's with strict security requirements
+// Resolution is intentionally deterministic for the distributable desktop app:
+// shipped tools first, explicit operator overrides second, then PATH.
 async function checkAndSetupFfmpeg() {
-  try {
-    const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
-    ffmpegPath = ffmpegInstaller.path;
-    
-    // In packaged app, the path may be inside app.asar - resolve it
-    if (ffmpegPath.includes('app.asar')) {
-      ffmpegPath = ffmpegPath.replace('app.asar', 'app.asar.unpacked');
-    }
-    
-    // Verify bundled version works
-    await execPromise(`"${ffmpegPath}" -version`);
-    ffmpegAvailable = true;
-    console.log('Using bundled ffmpeg:', ffmpegPath);
-    
-    // Set ffprobe path from @ffprobe-installer/ffprobe
-    try {
-      const ffprobeInstaller = require('@ffprobe-installer/ffprobe');
-      let ffprobePath = ffprobeInstaller.path;
-      if (ffprobePath.includes('app.asar')) {
-        ffprobePath = ffprobePath.replace('app.asar', 'app.asar.unpacked');
-      }
-      ffmpeg.setFfprobePath(ffprobePath);
-      console.log('Using bundled ffprobe:', ffprobePath);
-    } catch (e) {
-      // Fallback: try ffprobe next to ffmpeg
-      const ffprobeFileName = process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe';
-      const ffprobePath = path.join(path.dirname(ffmpegPath), ffprobeFileName);
-      if (fs.existsSync(ffprobePath)) {
-        ffmpeg.setFfprobePath(ffprobePath);
-        console.log('Using ffprobe from ffmpeg directory:', ffprobePath);
-      } else {
-        // Fallback: try system-wide ffprobe from PATH
-        try {
-          const whichProbeCmd = process.platform === 'win32' ? 'where ffprobe' : 'which ffprobe';
-          const probeResult = await execPromise(whichProbeCmd);
-          const systemProbePath = probeResult.stdout.trim().split('\n')[0].trim();
-          ffmpeg.setFfprobePath(systemProbePath);
-          console.log('Using system ffprobe:', systemProbePath);
-        } catch (probeErr) {
-          console.warn('ffprobe not found, some features may be limited');
-        }
-      }
-    }
-    
-    return true;
-  } catch (error) {
-    console.error('Failed to setup bundled ffmpeg:', error);
-    
-    // Fallback: try system-wide ffmpeg from PATH
-    try {
-      const whichCmd = process.platform === 'win32' ? 'where ffmpeg' : 'which ffmpeg';
-      const { stdout } = await execPromise(whichCmd);
-      const systemFfmpegPath = stdout.trim().split('\n')[0].trim();
-      
-      // Verify the system binary works
-      await execPromise(`"${systemFfmpegPath}" -version`);
-      ffmpegPath = systemFfmpegPath;
-      ffmpegAvailable = true;
-      console.log('Using system ffmpeg:', ffmpegPath);
-      
-      // Try to find system ffprobe too
-      try {
-        const whichProbeCmd = process.platform === 'win32' ? 'where ffprobe' : 'which ffprobe';
-        const probeResult = await execPromise(whichProbeCmd);
-        const systemFfprobePath = probeResult.stdout.trim().split('\n')[0].trim();
-        ffmpeg.setFfprobePath(systemFfprobePath);
-        console.log('Using system ffprobe:', systemFfprobePath);
-      } catch (probeErr) {
-        console.warn('System ffprobe not found, some features may be limited');
-      }
-      
-      return true;
-    } catch (systemError) {
-      console.error('System ffmpeg not found either:', systemError.message);
-      ffmpegAvailable = false;
-      return false;
-    }
-  }
+  const unpack = value => value && value.replace('app.asar', 'app.asar.unpacked');
+  const pathTool = async name => { try { const result = await execPromise(process.platform === 'win32' ? `where ${name}` : `which ${name}`); return result.stdout.trim().split(/\r?\n/)[0].trim(); } catch { return null; } };
+  const usable = async value => { if (!value) return false; try { await execPromise(`"${value}" -version`); return true; } catch { return false; } };
+  let bundledFfmpeg = null, bundledFfprobe = null;
+  try { bundledFfmpeg = unpack(require('@ffmpeg-installer/ffmpeg').path); } catch {}
+  try { bundledFfprobe = unpack(require('@ffprobe-installer/ffprobe').path); } catch {}
+  const choices = [ [bundledFfmpeg, 'bundled'], [process.env.LIVEPLAY_FFMPEG, 'environment'], [await pathTool('ffmpeg'), 'path'] ];
+  ffmpegPath = null; ffmpegSource = 'unavailable';
+  for (const [candidate, source] of choices) if (await usable(candidate)) { ffmpegPath = candidate; ffmpegSource = source; break; }
+  ffmpegAvailable = !!ffmpegPath;
+  const probeChoices = [ [bundledFfprobe, 'bundled'], [process.env.LIVEPLAY_FFPROBE, 'environment'], [await pathTool('ffprobe'), 'path'] ];
+  ffprobePath = null; ffprobeSource = 'unavailable';
+  for (const [candidate, source] of probeChoices) if (await usable(candidate)) { ffprobePath = candidate; ffprobeSource = source; break; }
+  if (ffmpegPath) ffmpeg.setFfmpegPath(ffmpegPath);
+  if (ffprobePath) ffmpeg.setFfprobePath(ffprobePath);
+  console.log('[media-tools] ffmpeg:', ffmpegSource, 'ffprobe:', ffprobeSource);
+  return ffmpegAvailable;
 }
 
 // ===========================================================================
@@ -1321,6 +1269,45 @@ let fileToOpen = null; // Store file path if app is opened with a file
 let stateViewerWindow = null; // Debug state viewer window
 let cartPlayerWindow = null;  // Detached cart player window
 let mixerWindow = null;       // Detached mixer window
+let videoOutputWindow = null; // Mute-only secondary display; audio remains server-owned.
+const videoIdentifyWindows = new Set();
+
+function videoOutputPrefsPath() { return path.join(app.getPath('userData'), 'liveplay-video-output.json'); }
+function readVideoOutputPrefs() { try { return JSON.parse(fs.readFileSync(videoOutputPrefsPath(), 'utf8')); } catch { return {}; } }
+function writeVideoOutputPrefs(value) { try { fs.writeFileSync(videoOutputPrefsPath(), JSON.stringify(value, null, 2)); } catch (e) { console.warn('[video-output] preferences were not saved:', e.message); } }
+function displayDto(d) { return { id: d.id, label: d.label || `Display ${d.id}`, bounds: d.bounds, workArea: d.workArea, refreshRate: d.displayFrequency || null }; }
+function safeVideoSource(source) {
+  if (!source || typeof source !== 'string') return '';
+  if (source.startsWith('file:')) return source;
+  return fs.existsSync(source) ? pathToFileURL(source).toString() : '';
+}
+
+function videoOutputHtml() {
+  return `<!doctype html><html><head><style>html,body,#stage{margin:0;width:100%;height:100%;background:#000;overflow:hidden}video,img,#black{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000}video{opacity:0;transition:opacity .35s linear}#black{background:#000;opacity:0;transition:opacity .35s linear;pointer-events:none}#idle{display:none}</style></head><body><div id="stage"><video id="a" muted playsinline></video><video id="b" muted playsinline></video><img id="idle"><div id="black"></div></div><script>const {ipcRenderer}=require('electron');let active=document.getElementById('a'),other=document.getElementById('b'),black=document.getElementById('black'),idle=document.getElementById('idle');const metric=()=>ipcRenderer.send('video-output:metrics',{positionMs:Math.round((active.currentTime||0)*1000),paused:active.paused});setInterval(metric,250);for(const v of [active,other])v.addEventListener('error',()=>ipcRenderer.send('video-output:metrics',{videoError:'unable to play visual source'}));function fade(el,on,ms){el.style.transitionDuration=Math.max(0,ms||350)+'ms';el.style.opacity=on?'1':'0'}function clearIdle(){idle.style.display='none';idle.removeAttribute('src')}function load(x){const incoming=other;clearIdle();black.style.opacity='0';incoming.src=x.source;incoming.currentTime=x.position||0;incoming.play().catch(()=>ipcRenderer.send('video-output:metrics',{videoError:'playback rejected'}));const cross=x.transition==='crossfade';fade(incoming,true,x.durationMs);if(cross)fade(active,false,x.durationMs);else{fade(active,false,0);fade(incoming,true,x.durationMs)}setTimeout(()=>{active.pause();active.removeAttribute('src');const old=active;active=incoming;other=old;metric()},Math.max(0,x.durationMs||0)+30)}ipcRenderer.on('video-output:command',(_,x)=>{const ms=Number(x.durationMs||350);if(x.type==='idle'){active.pause();other.pause();active.removeAttribute('src');other.removeAttribute('src');black.style.opacity='1';if((x.kind==='logo'||x.kind==='image')&&x.source){idle.src=x.source;idle.style.display='block';black.style.opacity='0'}return}if(x.type==='play'){load(x);return}if(x.type==='sync'){if(Math.abs((active.currentTime||0)-x.position)>0.08)active.currentTime=x.position;return}if(x.type==='stop'){if(x.transition==='fade-to-black'){fade(black,true,ms);setTimeout(()=>{active.pause();other.pause()},ms)}else if(x.transition==='fade-out'){fade(active,false,ms);setTimeout(()=>active.pause(),ms)}else active.pause();return}if(x.type==='fade-to-black'){fade(black,true,ms);return}if(x.type==='fade-in')fade(active,true,ms)})</script></body></html>`;
+}
+function ensureVideoOutput(opts = {}) {
+  const displays = screen.getAllDisplays();
+  const saved = readVideoOutputPrefs();
+  const requested = opts.displayId ?? saved.displayId;
+  const selected = displays.find(d => d.id === requested);
+  const display = selected || screen.getPrimaryDisplay();
+  if (videoOutputWindow && !videoOutputWindow.isDestroyed()) return videoOutputWindow;
+  videoOutputWindow = new BrowserWindow({ x: display.bounds.x, y: display.bounds.y, width: display.bounds.width, height: display.bounds.height, fullscreen: !!opts.fullscreen, frame: false, backgroundColor: '#000', webPreferences: { nodeIntegration: true, contextIsolation: false } });
+  videoOutputWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(videoOutputHtml())}`);
+  videoOutputWindow.on('closed', () => { videoOutputWindow = null; if (mainWindow) mainWindow.webContents.send('video-output:status', { available: false, error: 'window closed' }); });
+  if (requested !== undefined && !selected && mainWindow) mainWindow.webContents.send('video-output:status', { available: true, warning: 'Selected display is unavailable; using the primary display.' });
+  return videoOutputWindow;
+}
+ipcMain.handle('video-output:open', (_e, options = {}) => { const w = ensureVideoOutput(options); if (Number.isInteger(options.displayId)) writeVideoOutputPrefs({ ...readVideoOutputPrefs(), displayId: options.displayId }); return { available: true, displays: screen.getAllDisplays().map(displayDto), selectedDisplayId: readVideoOutputPrefs().displayId || screen.getPrimaryDisplay().id }; });
+ipcMain.handle('video-output:command', (_e, command) => { const payload = { ...(command || {}) }; if (payload.source) { payload.source = safeVideoSource(payload.source); if (!payload.source) return { ok: false, error: 'Visual source is missing or unavailable.' }; } const w = ensureVideoOutput(payload); if (w.webContents) w.webContents.send('video-output:command', payload); return { ok: true }; });
+ipcMain.handle('video-output:close', () => { if (videoOutputWindow && !videoOutputWindow.isDestroyed()) videoOutputWindow.close(); return true; });
+ipcMain.on('video-output:metrics', (_e, metrics) => { if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('video-output:metrics', metrics); });
+ipcMain.handle('video-output:identify', async () => {
+  for (const win of videoIdentifyWindows) if (!win.isDestroyed()) win.close(); videoIdentifyWindows.clear();
+  screen.getAllDisplays().forEach((display, index) => { const win = new BrowserWindow({ x: display.bounds.x, y: display.bounds.y, width: display.bounds.width, height: display.bounds.height, frame: false, transparent: true, alwaysOnTop: true, skipTaskbar: true, fullscreen: true, webPreferences: { nodeIntegration: false, contextIsolation: true } }); win.loadURL(`data:text/html,${encodeURIComponent(`<body style="margin:0;display:grid;place-items:center;background:rgba(0,0,0,.62);color:white;font:700 min(34vw,300px) sans-serif">${index + 1}</body>`)} `); videoIdentifyWindows.add(win); win.on('closed', () => videoIdentifyWindows.delete(win)); setTimeout(() => { if (!win.isDestroyed()) win.close(); }, 3500); });
+  return screen.getAllDisplays().map(displayDto);
+});
+ipcMain.handle('video-output:status', () => ({ displays: screen.getAllDisplays().map(displayDto), selectedDisplayId: readVideoOutputPrefs().displayId || screen.getPrimaryDisplay().id, outputOpen: !!videoOutputWindow && !videoOutputWindow.isDestroyed(), resolution: videoOutputWindow && !videoOutputWindow.isDestroyed() ? videoOutputWindow.getBounds() : null, ffmpeg: { available: ffmpegAvailable, source: ffmpegSource, path: ffmpegPath }, ffprobe: { available: !!ffprobePath, source: ffprobeSource, path: ffprobePath } }));
 
 // Minimum size for windows that host the full editing surface. Applied to the
 // main window and the detached mixer, both of which render the mixer's channel
@@ -2571,6 +2558,14 @@ ipcMain.handle('select-audio-files', async () => {
     return result.filePaths;
   }
   return null;
+});
+
+ipcMain.handle('select-image-file', async () => {
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openFile'],
+    filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp'] }],
+  });
+  return !result.canceled && result.filePaths.length ? result.filePaths[0] : null;
 });
 
 ipcMain.handle('read-file', async (event, filePath) => {

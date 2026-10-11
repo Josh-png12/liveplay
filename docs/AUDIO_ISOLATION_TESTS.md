@@ -1,9 +1,19 @@
-# LivePlay+ audio isolation tests
+# Audio isolation and physical hardware test
 
-`server/tests/e2e/library-audio-isolation-e2e.js` starts the Release server with an isolated Plus directory, plays a looping local WAV, submits 1,000 unique server-path imports, then polls engine and import state. Each import performs SHA-256, metadata extraction, copy, durable journal writes and permitted compaction. It records the engine's underrun/discontinuity counters, callback timing, queue depth, process CPU and working-set metrics in `docs/AUDIO_ISOLATION_RESULTS.json`.
+Run this test manually on the intended Windows machine for 10–15 minutes.
 
-Acceptance criterion: **0 audible dropouts during library operations**. The automated proxy requires `underruns == 0`, `discontinuities == 0`, `callback_overruns == 0`, a real active output device, at least one rendered block, and maximum render-block time below the configured block budget. This verifies the engine's instrumented continuity; it does not replace listening/loopback capture on every Windows driver or hardware path.
+1. Open a project with one continuous audio cue and at least two video cues.
+2. In **Settings → Event Hardware Test**, choose the video monitor, press
+   **Identify Displays**, then start the 15-minute harness.
+3. Start continuous audio. Exercise the left/right/stereo signal checks,
+   video playback, fade-in, fade-out, fade to black, crossfade, seeks and cue
+   changes. Toggle Speech Mode and operate the Show Board.
+4. Stop the harness and save its JSON summary. Check the recorded underruns,
+   callback overruns, maximum A/V drift, corrections, video errors and media
+   errors.
+5. Complete the human checklist: audible glitches heard (yes/no), picture
+   appeared on the selected monitor (yes/no), correct left/right routing
+   (yes/no), and each transition visually completed (yes/no).
 
-Phase 1.6 Release Windows result (2026-10-01): 1,000 tracks in 23,572 ms; 0 underruns, 0 discontinuities, 0 callback overruns; max/average render block 2,088/415.08 μs with a 5,333.33 μs budget; minimum queued audio 26.67 ms; CPU 21,437 ms; working set 26,050,560 bytes and peak 30,285,824 bytes; one output device. The test passed.
-
-The test is intentionally local: it does not depend on Internet, LLM, analysis models or a second audio engine. Before distributing a performance claim, repeat it on supported WASAPI/ASIO devices with antivirus enabled and capture an analog or digital loopback to verify perceived continuity.
+The application does not infer whether a glitch was audible. Acceptance for
+the hardware run is zero operator-confirmed audible dropouts.

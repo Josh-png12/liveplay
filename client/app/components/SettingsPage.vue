@@ -32,6 +32,7 @@
         <SettingsPaneAudio v-else-if="section === 'audio'" />
     <SettingsPaneMixer v-else-if="section === 'mixer'" />
         <SettingsPaneOutputs v-else-if="section === 'outputs'" />
+        <SettingsPaneEventHardware v-else-if="section === 'event-hardware'" />
         <SettingsPaneKeyboard v-else-if="section === 'keyboard'" />
         <SettingsPaneSurfaces v-else-if="section === 'surfaces'" />
         <SettingsPaneProject v-else-if="section === 'project'" />
@@ -49,6 +50,7 @@ import SettingsPanePlayback from './SettingsPanePlayback.vue';
 import SettingsPaneAudio from './SettingsPaneAudio.vue';
 import SettingsPaneMixer from './SettingsPaneMixer.vue';
 import SettingsPaneOutputs from './SettingsPaneOutputs.vue';
+import SettingsPaneEventHardware from './SettingsPaneEventHardware.vue';
 import SettingsPaneKeyboard from './SettingsPaneKeyboard.vue';
 import SettingsPaneSurfaces from './SettingsPaneSurfaces.vue';
 import SettingsPaneProject from './SettingsPaneProject.vue';

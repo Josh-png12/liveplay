@@ -341,3 +341,15 @@ Phase 1.6 conserva Track/TrackRepository como contrato sustituible y cambia sól
 ## Event MVP (Phase 1.7)
 
 The first show-control slice is layered over existing `AudioEngine`, cues, groups, buses and fade commands. `EventMvpPanel` edits a library track's cached waveform, creates a normal `AudioItem` only when the operator explicitly adds a cue, and exposes deterministic presets, team/template scaffolding, speech ducking and emergency controls. `TransitionEngine` is a control-thread adapter over existing `ProjectState::play_item`/`stop_item`; it does not create a second renderer. FFmpeg basic analysis and waveform workers are optional, cached and isolated from playback. Unavailable workers never block transport.
+
+## Media & Video Foundation (Phase 1.8)
+
+MP4 H.264/AAC is imported as a normal library Track with optional `media` facts. FFprobe runs outside the render path; FFmpeg produces a regenerable PCM audio proxy so `AudioEngine` remains the only audio renderer. The original MP4 is used only by a separate mute Electron video-output window. Audio transport is the timing authority; video seeks when drift exceeds 80 ms. See [MEDIA_VIDEO_FOUNDATION](MEDIA_VIDEO_FOUNDATION.md).
+# RC video output boundary
+
+LivePlay+ video presentation is an Electron-owned, muted secondary window.
+Its IPC commands never enter `AudioEngine`; audio position is sampled from the
+already-running cue telemetry and used only to correct video drift. Hardware
+status combines `/api/engine/stats`, the existing engine configuration and
+Electron display/tool status. Regenerable media cache is isolated below the
+Plus cache root and can be deleted only by its explicit API.

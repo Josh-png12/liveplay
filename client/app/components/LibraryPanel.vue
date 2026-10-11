@@ -28,8 +28,9 @@
         <span>{{ t('plusLibrary.trackCount', {count: filtered.length}) }}{{ loading ? ` · ${t('plusLibrary.loading')}` : '' }}</span>
       </div>
       <div class="table-scroll"><table>
-        <thead><tr><th v-for="column in columns" :key="column.key"><button @click="setSort(column.key)">{{ t(column.label) }} {{ sort === column.key ? (descending ? '↓' : '↑') : '' }}</button></th><th>{{ t('plusLibrary.actions') }}</th></tr></thead>
+        <thead><tr><th><input v-model="allVisibleSelected" type="checkbox" :aria-label="t('plusLibrary.selectAll')"></th><th v-for="column in columns" :key="column.key"><button @click="setSort(column.key)">{{ t(column.label) }} {{ sort === column.key ? (descending ? '↓' : '↑') : '' }}</button></th><th>{{ t('plusLibrary.actions') }}</th></tr></thead>
         <tbody><tr v-for="track in visibleTracks" :key="track.id">
+          <td><input v-model="selectedTrackIds" :value="track.id" type="checkbox" :aria-label="track.title"></td>
           <td>{{ track.title }} <span v-if="duplicates.has(track.id)" class="duplicate">{{ t('plusLibrary.duplicate') }}</span></td>
           <td>{{ track.artist || '—' }}</td><td>{{ track.album || '—' }}</td>
           <td>{{ duration(track.duration_ms) }}</td><td>{{ track.format }}</td><td>{{ track.sample_rate || '—' }}</td><td>{{ track.channels || '—' }}</td><td>{{ size(track.size_bytes) }}</td>
@@ -54,7 +55,12 @@
           <label v-for="name in maintenance.orphans" :key="name"><input v-model="selectedOrphans" :value="name" type="checkbox"> {{ name }}</label>
           <label><input v-model="confirmedCleanup" type="checkbox"> {{ t('plusLibrary.confirmCleanup') }}</label>
           <button :disabled="!confirmedCleanup || !selectedOrphans.length || maintenance.status === 'running'" @click="cleanup">{{ t('plusLibrary.deleteSelected') }}</button>
-        </div>
+      </div>
+      <section class="loudness" :aria-label="t('plusLibrary.loudnessTitle')"><h2>{{ t('plusLibrary.loudnessTitle') }}</h2>
+        <p>{{ t('plusLibrary.loudnessDescription') }}</p><div class="toolbar"><button :disabled="!selectedTrackIds.length" @click="analyzeLoudness">{{ t('plusLibrary.analyzeLoudness') }}</button><button :disabled="!selectedTrackIds.length" @click="prepareLoudness('preview')">{{ t('plusLibrary.previewGain') }}</button><button :disabled="!prepared.length" @click="prepareLoudness('apply')">{{ t('plusLibrary.applyRecommendedGain') }}</button><button :disabled="!selectedTrackIds.length" @click="prepareLoudness('reset')">{{ t('plusLibrary.resetGain') }}</button></div>
+        <label>{{ t('plusLibrary.targetLufs') }} <input v-model.number="loudness.target_lufs" type="number" step="0.5"></label><label>{{ t('plusLibrary.maxPositiveGain') }} <input v-model.number="loudness.max_positive_gain_db" type="number" step="0.5"></label><label>{{ t('plusLibrary.maxNegativeGain') }} <input v-model.number="loudness.max_negative_gain_db" type="number" step="0.5"></label><label>{{ t('plusLibrary.truePeakCeiling') }} <input v-model.number="loudness.true_peak_ceiling_dbtp" type="number" step="0.5"></label>
+        <table v-if="prepared.length"><thead><tr><th>{{ t('plusLibrary.titleColumn') }}</th><th>{{ t('plusLibrary.currentLufs') }}</th><th>{{ t('plusLibrary.recommendedGain') }}</th><th>{{ t('plusLibrary.estimatedPeak') }}</th></tr></thead><tbody><tr v-for="row in prepared" :key="row.track_id"><td>{{ trackName(row.track_id) }}</td><td>{{ row.current_lufs ?? '—' }}</td><td>{{ row.recommended_gain_db ?? row.status }}</td><td>{{ row.estimated_true_peak_dbtp ?? '—' }}</td></tr></tbody></table>
+      </section>
       </section>
       <p class="analysis-info">{{ t('plusLibrary.analysisInfo') }}</p>
     </template>
@@ -70,6 +76,9 @@ const { t } = useLocalization();
 const fileInput = ref<HTMLInputElement>();
 const relinkId = ref(''), search = ref(''), format = ref(''), state = ref(''), sort = ref<keyof PlusTrack>('title'), descending = ref(false), page = ref(0);
 const backup = ref(''), confirmedRecovery = ref(false), confirmedCleanup = ref(false), selectedOrphans = ref<string[]>([]);
+const server = useLiveplayServer(); const selectedTrackIds = ref<string[]>([]), prepared = ref<any[]>([]);
+const loudness = ref({ target_lufs: -12, max_positive_gain_db: 6, max_negative_gain_db: -12, true_peak_ceiling_dbtp: -1 });
+const allVisibleSelected = computed({ get: () => visibleTracks.value.length > 0 && visibleTracks.value.every(track => selectedTrackIds.value.includes(track.id)), set: (checked: boolean) => { const visible = visibleTracks.value.map(track => track.id); selectedTrackIds.value = checked ? [...new Set([...selectedTrackIds.value, ...visible])] : selectedTrackIds.value.filter(id => !visible.includes(id)); } });
 const columns: {key: keyof PlusTrack; label: string}[] = [
   {key:'title',label:'plusLibrary.titleColumn'}, {key:'artist',label:'plusLibrary.artist'}, {key:'album',label:'plusLibrary.album'}, {key:'duration_ms',label:'plusLibrary.duration'},
   {key:'format',label:'plusLibrary.format'}, {key:'sample_rate',label:'plusLibrary.sampleRate'}, {key:'channels',label:'plusLibrary.channels'}, {key:'size_bytes',label:'plusLibrary.size'}, {key:'status',label:'plusLibrary.state'}
@@ -90,6 +99,9 @@ function selectedFiles(event: Event) {
 function dropFiles(event: DragEvent) { if (!uploading.value) void importFiles(Array.from(event.dataTransfer?.files || [])); }
 function performanceChanged(event: Event) { void setPerformance((event.target as HTMLInputElement).checked); }
 function cleanup() { void maintain('cleanup', [...selectedOrphans.value], true); selectedOrphans.value = []; confirmedCleanup.value = false; }
+async function analyzeLoudness() { try { await Promise.all(selectedTrackIds.value.map(track_id => server.plusRequest('/api/plus/analysis/jobs', { method: 'POST', body: JSON.stringify({ track_id, provider: 'ffmpeg-basic' }) }))); } catch (e) { error.value = String(e); } }
+async function prepareLoudness(action: 'preview'|'apply'|'reset') { try { const result: any = await server.plusRequest('/api/plus/loudness/prepare', { method: 'POST', body: JSON.stringify({ action, track_ids: selectedTrackIds.value, settings: loudness.value }) }); prepared.value = result.tracks || []; if (action !== 'preview') await refresh(); } catch (e) { error.value = String(e); } }
+const trackName = (id: string) => tracks.value.find(track => track.id === id)?.title || id;
 const duration = (ms: number) => `${Math.floor(ms / 60000)}:${Math.floor(ms / 1000 % 60).toString().padStart(2, '0')}`;
 const size = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(2)} MiB`;
 const stateLabel = (value: string) => ({available:t('plusLibrary.available'),missing:t('plusLibrary.missingAsset'),corrupt:t('plusLibrary.hashMismatch')}[value] || value);
@@ -103,5 +115,5 @@ button, input, select { font: inherit; color: inherit; background: var(--color-s
 button { cursor: pointer; } button:disabled { opacity: .45; cursor: default; } button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--color-accent); }
 .table-scroll { overflow: auto; max-height: 48vh; } table { width: 100%; border-collapse: collapse; white-space: nowrap; } th { position: sticky; top: 0; background: var(--color-background); text-align: left; } th button { border: 0; background: none; padding-left: 0; }
 td { padding: 10px 12px 10px 0; border-bottom: 1px solid var(--color-border); } .error { color: #ff8d8d; } .duplicate { display: inline-block; padding: 2px 5px; background: #ca9c3322; color: #e5bb5a; font-size: 11px; }
-details { padding: 8px 0; border-bottom: 1px solid var(--color-border); } summary { cursor: pointer; } progress { margin: 12px; width: 180px; } li { padding: 3px; } label { display: inline-flex; gap: 6px; align-items: center; } section label { display: flex; margin: 8px 0; } .analysis-info { color: var(--color-text-secondary); margin-top: 24px; }
+details { padding: 8px 0; border-bottom: 1px solid var(--color-border); } summary { cursor: pointer; } progress { margin: 12px; width: 180px; } li { padding: 3px; } label { display: inline-flex; gap: 6px; align-items: center; } section label { display: flex; margin: 8px 0; } .analysis-info { color: var(--color-text-secondary); margin-top: 24px; } .loudness{margin-top:20px;border-top:1px solid var(--color-border);padding-top:12px}.loudness table{margin-top:10px}.loudness input{width:70px}
 </style>

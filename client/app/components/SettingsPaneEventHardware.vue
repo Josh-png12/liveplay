@@ -1,0 +1,51 @@
+<template>
+  <div class="settings-pane event-hardware">
+    <h2 class="settings-pane-title">{{ t('eventHardware.title') }}</h2>
+    <p class="settings-pane-intro">{{ t('eventHardware.intro') }}</p>
+    <p v-if="error" class="error" role="alert">{{ error }}</p><p v-if="warning" class="warning">{{ warning }}</p>
+
+    <section class="settings-field"><label class="settings-label">{{ t('eventHardware.monitor') }}</label>
+      <select class="settings-select" v-model.number="displayId" @change="saveVideoSettings"><option v-for="display in displays" :key="display.id" :value="display.id">{{ display.label }} · {{ display.bounds.width }}×{{ display.bounds.height }}</option></select>
+      <div class="settings-actions"><button @click="identify">{{ t('eventHardware.identify') }}</button></div>
+    </section>
+    <section class="settings-field"><label class="settings-label">{{ t('eventHardware.idle') }}</label>
+      <select class="settings-select" v-model="idleKind" @change="applyIdle"><option value="black">{{ t('eventHardware.black') }}</option><option value="logo">{{ t('eventHardware.logo') }}</option><option value="image">{{ t('eventHardware.image') }}</option></select>
+      <div class="settings-actions"><button :disabled="idleKind === 'black'" @click="chooseImage">{{ t('eventHardware.chooseImage') }}</button></div>
+    </section>
+    <section class="settings-field"><label class="settings-label">{{ t('eventHardware.diagnostics') }}</label>
+      <dl class="diagnostics"><template v-for="row in diagnosticRows" :key="row[0]"><dt>{{ row[0] }}</dt><dd>{{ row[1] }}</dd></template></dl>
+    </section>
+    <section class="settings-field"><label class="settings-label">{{ t('eventHardware.cache') }}</label><p class="settings-help">{{ cache.bytes || 0 }} B · {{ cache.files || 0 }}</p><div class="settings-actions"><button :disabled="cache.busy" @click="clearCache">{{ t('eventHardware.clearCache') }}</button></div></section>
+    <section class="settings-field"><label class="settings-label">{{ t('eventHardware.title') }}</label><div class="actions"><button @click="testAudio('stereo')">{{ t('eventHardware.playAudio') }}</button><button @click="testAudio('left')">{{ t('eventHardware.left') }}</button><button @click="testAudio('right')">{{ t('eventHardware.right') }}</button><button @click="testVideo">{{ t('eventHardware.playVideo') }}</button><button @click="syncTest">{{ t('eventHardware.avSync') }}</button><button @click="stop">{{ t('eventHardware.stop') }}</button></div></section>
+    <section class="settings-field"><label class="settings-label">{{ t('eventHardware.harness') }}</label><div class="actions"><button v-if="!harness.started" @click="startHarness">{{ t('eventHardware.startHarness') }}</button><button v-else @click="finishHarness">{{ t('eventHardware.finishHarness') }}</button></div><p class="settings-help">{{ t('eventHardware.manualCheck') }}</p><pre v-if="harness.summary">{{ harness.summary }}</pre></section>
+  </div>
+</template>
+
+<script setup lang="ts">
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { useVideoOutput } from '~/composables/useVideoOutput';
+const { t } = useLocalization(); const server = useLiveplayServer(); const { currentProject, saveProject } = useProject(); const video = useVideoOutput();
+const displays = ref<any[]>([]), displayId = ref<number | null>(null), hardware = ref<any>({}), cache = ref<any>({}), error = ref(''), warning = ref('');
+const idleKind = ref<'black'|'logo'|'image'>('black'), idleSource = ref(''); const harness = ref<any>({ started: 0, baseline: null, summary: '' }); let timer: ReturnType<typeof setInterval> | undefined;
+const settings = () => { const project: any = currentProject.value; if (!project) return {}; project.settings ||= {}; project.settings.videoOutput ||= {}; return project.settings.videoOutput; };
+const diagnosticRows = computed(() => [[t('eventHardware.audioDevice'), hardware.value.audioOutputDevice || t('eventHardware.unavailable')], [t('eventHardware.sampleRate'), hardware.value.sampleRate || '—'], [t('eventHardware.bufferSize'), hardware.value.bufferSize || '—'], [t('eventHardware.callbackStatus'), hardware.value.callbackStatus || '—'], [t('eventHardware.underruns'), hardware.value.audioUnderruns ?? '—'], [t('eventHardware.masterPeak'), `${Number(hardware.value.masterTruePeakDbtp ?? -120).toFixed(1)} dBTP`], [t('eventHardware.masterRms'), `${Number(hardware.value.masterRmsDbfs ?? -120).toFixed(1)} dBFS`], [t('eventHardware.clipping'), Number(hardware.value.masterTruePeakDbtp ?? -120) >= -1 ? t('eventHardware.yes') : t('eventHardware.no')], [t('eventHardware.outputGain'), `${Number(hardware.value.outputGainDb ?? 0).toFixed(1)} dB`], [t('eventHardware.limiterReduction'), hardware.value.outputLimiterAvailable ? `${Number(hardware.value.limiterGainReductionDb ?? 0).toFixed(1)} dB` : t('eventHardware.unavailable')], [t('eventHardware.videoMonitor'), selectedDisplay.value?.label || t('eventHardware.unavailable')], [t('eventHardware.resolution'), selectedDisplay.value ? `${selectedDisplay.value.bounds.width}×${selectedDisplay.value.bounds.height}` : '—'], [t('eventHardware.refreshRate'), selectedDisplay.value?.refreshRate || '—'], [t('eventHardware.ffmpeg'), hardware.value.ffmpeg || '—'], [t('eventHardware.ffprobe'), hardware.value.ffprobe || '—'], [t('eventHardware.audioPosition'), '—'], [t('eventHardware.videoPosition'), `${video.videoPositionSeconds.value.toFixed(3)} s`], [t('eventHardware.drift'), `${video.avDriftMs.value.toFixed(1)} ms`], [t('eventHardware.maxDrift'), `${video.maxDriftMs.value.toFixed(1)} ms`], [t('eventHardware.corrections'), video.corrections.value], [t('eventHardware.videoErrors'), video.videoErrors.value]]);
+const selectedDisplay = computed(() => displays.value.find(d => d.id === displayId.value));
+async function refresh() { try { const [status, tool, cacheData] = await Promise.all([server.plusRequest<any>('/api/plus/hardware/status'), (window as any).electronAPI?.videoOutput?.status?.(), server.plusRequest<any>('/api/plus/media-cache')]); hardware.value = { ...status, ffmpeg: tool?.ffmpeg?.available ? t('eventHardware.ok') : t('eventHardware.unavailable'), ffprobe: tool?.ffprobe?.available ? t('eventHardware.ok') : t('eventHardware.unavailable') }; displays.value = tool?.displays || []; cache.value = cacheData || {}; if (displayId.value === null) displayId.value = settings().displayId ?? tool?.selectedDisplayId ?? displays.value[0]?.id ?? null; } catch (e) { error.value = String(e); } }
+async function saveVideoSettings() { settings().displayId = displayId.value; settings().idleKind = idleKind.value; settings().idleSource = idleSource.value; await saveProject(); await video.open({ displayId: displayId.value || undefined, fullscreen: true }); }
+async function applyIdle() { await saveVideoSettings(); await video.idle(idleKind.value, idleSource.value); }
+async function chooseImage() { const chosen = await (window as any).electronAPI?.selectImageFile?.(); if (!chosen) return; idleSource.value = chosen; await applyIdle(); }
+async function identify() { await video.identifyDisplays(); }
+async function testAudio(channel: string) { try { await server.plusRequest('/api/plus/hardware/test-audio', { method: 'POST', body: JSON.stringify({ channel }) }); } catch (e) { error.value = String(e); } }
+function firstVideoCue(items: any[]): any { for (const item of items || []) { if (item.eventCue?.media?.hasVideo) return item; const nested = firstVideoCue(item.children); if (nested) return nested; } return null; }
+async function testVideo() { const cue = firstVideoCue((currentProject.value as any)?.items); if (!cue) { error.value = t('eventHardware.noSource'); return; } await video.play(cue.eventCue.media.sourcePath, cue.inPoint || 0, { displayId: displayId.value, fullscreen: true, transition: 'fade-in', durationMs: 400 }); }
+async function syncTest() { await testAudio('stereo'); await testVideo(); }
+async function stop() { await server.plusRequest('/api/plus/hardware/test-audio/stop', { method: 'POST' }); await video.stop('fade-to-black', 350); }
+async function clearCache() { try { await server.plusRequest('/api/plus/media-cache', { method: 'DELETE' }); await refresh(); } catch (e) { error.value = String(e); } }
+function startHarness() { harness.value = { started: Date.now(), baseline: { underruns: hardware.value.audioUnderruns || 0, corrections: video.corrections.value, videoErrors: video.videoErrors.value }, summary: '' }; }
+function finishHarness() { const seconds = Math.round((Date.now() - harness.value.started) / 1000); const b = harness.value.baseline || {}; harness.value.summary = JSON.stringify({ durationSeconds: seconds, audioUnderruns: Math.max(0, (hardware.value.audioUnderruns || 0) - (b.underruns || 0)), callbackOverruns: hardware.value.callbackOverruns || 0, maxAvDriftMs: video.maxDriftMs.value, avCorrections: Math.max(0, video.corrections.value - (b.corrections || 0)), videoErrors: Math.max(0, video.videoErrors.value - (b.videoErrors || 0)), mediaErrors: error.value ? 1 : 0, humanAudibleGlitchesConfirmed: null }, null, 2); harness.value.started = 0; }
+onMounted(async () => { const cfg = settings(); idleKind.value = cfg.idleKind || 'black'; idleSource.value = cfg.idleSource || ''; await refresh(); timer = setInterval(refresh, 2000); }); onBeforeUnmount(() => { if (timer) clearInterval(timer); });
+</script>
+
+<style scoped>
+.actions{display:flex;flex-wrap:wrap;gap:8px}.diagnostics{display:grid;grid-template-columns:minmax(170px,1fr) 1fr;gap:6px 12px;margin:0}.diagnostics dt{color:var(--color-text-secondary)}.diagnostics dd{margin:0;font-variant-numeric:tabular-nums}.error{color:#d75b5b}.warning{color:#c78319}pre{max-height:230px;overflow:auto;background:var(--color-surface);padding:10px;border:1px solid var(--color-border);border-radius:6px}
+</style>
