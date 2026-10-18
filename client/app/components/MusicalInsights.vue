@@ -12,16 +12,58 @@
     <template v-if="analysis">
       <dl class="facts">
         <dt>{{ t('musical.bpm') }}</dt>
-        <dd>{{ formatBpm(analysis.bpm) }} <span v-if="analysis.bpmConfidenceLabel" class="chip" :class="analysis.bpmConfidenceLabel" :title="String(analysis.bpmConfidence)">{{ t(`musical.confidence.${analysis.bpmConfidenceLabel}`) }}</span></dd>
+        <dd>{{ formatBpm(eff?.bpm ?? analysis.bpm) }} <span v-if="eff?.bpmSource && eff.bpmSource !== 'detected'" class="chip corrected">{{ t('musical.corrected') }}</span><span v-else-if="analysis.bpmConfidenceLabel" class="chip" :class="analysis.bpmConfidenceLabel" :title="String(analysis.bpmConfidence)">{{ t(`musical.confidence.${analysis.bpmConfidenceLabel}`) }}</span></dd>
         <dt>{{ t('musical.key') }}</dt>
-        <dd>{{ formatKey(analysis) }} <span v-if="analysis.keyConfidence != null" class="chip" :class="confidenceLabel(analysis.keyConfidence) || 'low'">{{ t(`musical.confidence.${confidenceLabel(analysis.keyConfidence)}`) }}</span></dd>
+        <dd>{{ formatKey({ key: eff?.key ?? analysis.key, scale: eff?.scale ?? analysis.scale }) }} <span v-if="eff?.keySource === 'corrected'" class="chip corrected">{{ t('musical.corrected') }}</span><span v-else-if="analysis.keyConfidence != null" class="chip" :class="confidenceLabel(analysis.keyConfidence) || 'low'">{{ t(`musical.confidence.${confidenceLabel(analysis.keyConfidence)}`) }}</span></dd>
         <dt>{{ t('musical.camelot') }}</dt>
-        <dd><span v-if="analysis.camelot" class="camelot" :style="{ background: camelotColor(analysis.camelot) }">{{ analysis.camelot }}</span><template v-else>—</template></dd>
+        <dd><span v-if="eff?.camelot ?? analysis.camelot" class="camelot" :style="{ background: camelotColor(eff?.camelot ?? analysis.camelot) }">{{ eff?.camelot ?? analysis.camelot }}</span><template v-else>—</template></dd>
         <dt>{{ t('musical.energy') }}</dt>
         <dd><span class="bar"><i :style="{ width: formatEnergy(analysis.energy) }" /></span> {{ formatEnergy(analysis.energy) }} · {{ analysis.energyLevel || '—' }}/5</dd>
       </dl>
-      <p v-if="analysis.bpmAmbiguous" class="warn" role="note">{{ t('musical.ambiguous', { alternatives: analysis.bpmAlternatives.map(a => formatBpm(a.bpm)).join(', ') }) }}</p>
+      <p v-if="analysis.bpmAmbiguous && eff?.bpmSource === 'detected'" class="warn" role="note">{{ t('musical.ambiguous', { alternatives: analysis.bpmAlternatives.map(a => formatBpm(a.bpm)).join(', ') }) }}</p>
       <p v-for="warning in analysis.warnings" :key="warning" class="hint">⚠ {{ warning }}</p>
+      <details class="more corrections" :open="editing">
+        <summary @click.prevent="editing = !editing">{{ t('musical.corrections') }}</summary>
+        <p v-if="correctionError" class="error" role="alert">{{ correctionError }}</p>
+        <h4>{{ t('musical.bpm') }}</h4>
+        <dl class="facts small">
+          <dt>{{ t('musical.detectedBpm') }}</dt><dd>{{ formatBpm(analysis.bpm) }}</dd>
+          <dt>{{ t('musical.effectiveBpm') }}</dt><dd>{{ formatBpm(eff?.bpm ?? analysis.bpm) }} · {{ t(`musical.source.${eff?.bpmSource ?? 'detected'}`) }}</dd>
+        </dl>
+        <div v-if="analysis.bpmAlternatives.length" class="row"><span>{{ t('musical.alternatives') }}</span>
+          <button v-for="alt in analysis.bpmAlternatives" :key="alt.relation + alt.bpm" @click="setBpm({ mode: 'custom', value: alt.bpm })">{{ formatBpm(alt.bpm) }}</button></div>
+        <div class="row">
+          <button :disabled="analysis.bpm == null" @click="setBpm({ mode: 'factor', value: 2 })">{{ t('musical.useDouble') }}</button>
+          <button :disabled="analysis.bpm == null" @click="setBpm({ mode: 'factor', value: 0.5 })">{{ t('musical.useHalf') }}</button>
+          <label>{{ t('musical.customBpm') }} <input v-model.number="customBpm" type="number" min="20" max="400" step="0.01"></label>
+          <button :disabled="!(customBpm >= 20 && customBpm <= 400)" @click="setBpm({ mode: 'custom', value: customBpm })">{{ t('musical.apply') }}</button>
+          <button :disabled="eff?.bpm == null" :title="t('musical.fine')" @click="setBpm({ mode: 'custom', value: round2((eff?.bpm ?? 0) - 0.1) })">−0.1</button>
+          <button :disabled="eff?.bpm == null" :title="t('musical.fine')" @click="setBpm({ mode: 'custom', value: round2((eff?.bpm ?? 0) + 0.1) })">+0.1</button>
+          <button :disabled="!corrections.bpm" @click="reset('bpm')">{{ t('musical.reset') }}</button>
+        </div>
+        <h4>{{ t('musical.key') }}</h4>
+        <div class="row">
+          <span>{{ t('musical.detectedKey') }}: {{ formatKey(analysis) }}</span>
+          <label>{{ t('musical.correctedKey') }}
+            <select :value="corrections.key ?? ''" @change="setKey(($event.target as HTMLSelectElement).value || null, corrections.scale ?? null)"><option value="">{{ t('musical.detected') }}</option><option v-for="name in PITCH_NAMES" :key="name" :value="name">{{ name }}</option></select></label>
+          <label>{{ t('musical.scale') }}
+            <select :value="corrections.scale ?? ''" @change="setKey(corrections.key ?? null, ($event.target as HTMLSelectElement).value || null)"><option value="">{{ t('musical.detected') }}</option><option value="major">major</option><option value="minor">minor</option></select></label>
+          <span>{{ t('musical.camelot') }}: <span class="camelot" :style="{ background: camelotColor(eff?.camelot) }">{{ eff?.camelot || '—' }}</span></span>
+          <button :disabled="!corrections.key && !corrections.scale" @click="reset('key')">{{ t('musical.reset') }}</button>
+        </div>
+        <h4>{{ t('musical.beatGrid') }}</h4>
+        <div class="row">
+          <span>{{ eff?.beatGrid ? t('musical.beatGridValue', { first: Math.round(eff.beatGrid.firstBeatMs), interval: eff.beatGrid.intervalMs.toFixed(1), tempo: formatBpm(eff.beatGrid.tempo) }) : '—' }} · {{ t(`musical.gridSource.${eff?.gridSource ?? 'detected'}`) }}</span>
+        </div>
+        <div class="row">
+          <button :disabled="cursorMs == null || eff?.bpm == null" :title="t('musical.setFirstBeatHint')" @click="applyCorrection({ set: { firstBeatMs: Math.round(cursorMs ?? 0), gridOffsetMs: 0 } })">{{ t('musical.setFirstBeat') }}{{ cursorMs != null ? ` (${Math.round(cursorMs)} ms)` : '' }}</button>
+          <select v-model.number="nudgeStep"><option :value="1">1 ms</option><option :value="5">5 ms</option><option :value="10">10 ms</option><option :value="50">50 ms</option></select>
+          <button :disabled="eff?.bpm == null" @click="applyCorrection({ nudgeGridMs: -nudgeStep })">◀ {{ t('musical.gridLeft') }}</button>
+          <button :disabled="eff?.bpm == null" @click="applyCorrection({ nudgeGridMs: nudgeStep })">{{ t('musical.gridRight') }} ▶</button>
+          <span v-if="corrections.gridOffsetMs">{{ t('musical.gridOffset', { ms: corrections.gridOffsetMs }) }}</span>
+          <button :disabled="!corrections.firstBeatMs && !corrections.gridOffsetMs && !corrections.bpm" @click="reset('all')">{{ t('musical.resetToDetected') }}</button>
+        </div>
+      </details>
       <details class="more">
         <summary>{{ t('musical.details') }}</summary>
         <dl class="facts small">
@@ -74,10 +116,11 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue';
 import type { PlusTrack } from '~/types/plus';
 import type { PlusMusical } from '~/composables/usePlusMusical';
-import { analysisStatus, camelotColor, confidenceLabel, formatBpm, formatEnergy, formatKey, formatRange, sectionColor } from '~/utils/musical';
+import { PITCH_NAMES, analysisStatus, camelotColor, confidenceLabel, effectiveBeatsMs, formatBpm, formatEnergy, formatKey, formatRange, sectionColor } from '~/utils/musical';
+import type { MusicalCorrections } from '~/utils/musical';
 import type { CueSuggestion, MusicalAnalysis, OverlayOptions } from '~/utils/musical';
 
-const props = withDefaults(defineProps<{ track: PlusTrack; musical: PlusMusical; showSuggestions?: boolean; showOverlays?: boolean }>(), { showSuggestions: false, showOverlays: false });
+const props = withDefaults(defineProps<{ track: PlusTrack; musical: PlusMusical; showSuggestions?: boolean; showOverlays?: boolean; cursorMs?: number | null }>(), { showSuggestions: false, showOverlays: false, cursorMs: null });
 const emit = defineEmits<{
   (e: 'overlay', value: { analysis: MusicalAnalysis | null; options: OverlayOptions }): void;
   (e: 'preview', value: CueSuggestion): void;
@@ -86,6 +129,18 @@ const emit = defineEmits<{
 const { t } = useLocalization();
 const analysis = ref<MusicalAnalysis | null>(null);
 const overlay = reactive({ beats: true, downbeats: true, sections: true });
+const editing = ref(false), correctionError = ref(''), customBpm = ref(120), nudgeStep = ref(5);
+const eff = computed(() => analysis.value?.effective ?? null);
+const corrections = computed<Partial<MusicalCorrections>>(() => analysis.value?.corrections ?? {});
+const round2 = (v: number) => Math.round(v * 100) / 100;
+async function applyCorrection(change: Parameters<PlusMusical['correct']>[1]) {
+  correctionError.value = '';
+  try { analysis.value = await props.musical.correct(props.track.id, change); emitOverlay(); }
+  catch (e) { correctionError.value = String(e); }
+}
+const setBpm = (bpm: MusicalCorrections['bpm']) => applyCorrection({ set: { bpm } });
+const setKey = (key: string | null, scale: string | null) => applyCorrection({ set: { key, scale } });
+const reset = (what: string) => applyCorrection({ reset: what });
 const suggestions = ref<CueSuggestion[]>([]), rejected = ref<Set<string>>(new Set()), loaded = ref(false), loadingSuggestions = ref(false);
 const suggestionNote = ref(''), previewing = ref('');
 
@@ -102,7 +157,7 @@ async function load() {
   try { analysis.value = (await props.musical.details(props.track.id)).analysis; } catch { analysis.value = null; }
   emitOverlay();
 }
-function emitOverlay() { emit('overlay', { analysis: analysis.value, options: { beats: overlay.beats, downbeats: overlay.downbeats && !!analysis.value?.downbeatsAvailable, sections: overlay.sections, suggestion: previewing.value ? (suggestions.value.find(s => s.intent === previewing.value) || null) : null } }); }
+function emitOverlay() { emit('overlay', { analysis: analysis.value ? { ...analysis.value, beatsMs: effectiveBeatsMs(analysis.value) } : null, options: { beats: overlay.beats, downbeats: overlay.downbeats && !!analysis.value?.downbeatsAvailable, sections: overlay.sections, suggestion: previewing.value ? (suggestions.value.find(s => s.intent === previewing.value) || null) : null } }); }
 async function run(force: boolean) { await props.musical.analyze([props.track.id], force || status.value === 'ready'); }
 async function loadSuggestions() {
   loadingSuggestions.value = true; suggestionNote.value = '';
@@ -133,7 +188,7 @@ h4 { margin: 10px 0 4px; } button { font: inherit; color: inherit; background: v
 button.primary { border-color: var(--color-accent); } .hint { color: var(--color-text-secondary); margin: 6px 0; } .error { color: #ff8d8d; } .warn { color: #e5bb5a; margin: 6px 0; }
 .status { font-size: 11px; padding: 2px 7px; border-radius: 10px; background: #7a7f8744; } .status.ready { background: #3fa35f55; } .status.stale, .status.queued { background: #ca9c3355; } .status.running { background: #4a9fdf55; } .status.failed { background: #e5565b55; }
 .facts { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px; margin: 8px 0; } .facts dt { color: var(--color-text-secondary); } .facts dd { margin: 0; } .facts.small { font-size: 12px; }
-.chip { font-size: 10px; padding: 1px 6px; border-radius: 9px; text-transform: uppercase; background: #7a7f8755; } .chip.high { background: #3fa35f66; } .chip.medium { background: #ca9c3366; } .chip.low { background: #e5565b55; }
+.chip { font-size: 10px; padding: 1px 6px; border-radius: 9px; text-transform: uppercase; background: #7a7f8755; } .chip.high { background: #3fa35f66; } .chip.medium { background: #ca9c3366; } .chip.low { background: #e5565b55; } .chip.corrected { background: #4a9fdf66; text-transform: none; } .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 4px 0; } input[type=number], select { font: inherit; color: inherit; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 5px; padding: 3px 6px; } input[type=number] { width: 80px; }
 .camelot { display: inline-block; min-width: 34px; text-align: center; padding: 1px 8px; border-radius: 5px; font-weight: 600; color: #fff; }
 .bar { display: inline-block; width: 90px; height: 8px; background: #7a7f8744; border-radius: 4px; vertical-align: middle; overflow: hidden; } .bar i { display: block; height: 100%; background: linear-gradient(90deg, #4aa3df, #e5565b); }
 .sections { list-style: none; padding: 0; margin: 0; } .sections li { display: flex; align-items: center; gap: 8px; padding: 2px 0; } .swatch { width: 10px; height: 10px; border-radius: 2px; } .range { color: var(--color-text-secondary); font-variant-numeric: tabular-nums; }

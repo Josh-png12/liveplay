@@ -62,3 +62,15 @@ assert.equal(r.calls.stroke, 1, 'no downbeats available -> nothing is drawn for 
 assert.deepEqual(m.drawMusicalOverlays(recorder().ctx, 900, 180, 0, analysis, {beats: true, downbeats: true, sections: true}), {beats: 0, downbeats: 0, sections: 0});
 assert.deepEqual(m.drawMusicalOverlays(recorder().ctx, 900, 180, 1000, null, {beats: true, downbeats: true, sections: true}), {beats: 0, downbeats: 0, sections: 0});
 console.log('PASS Musical analysis formatting, status derivation, marker thinning and bounded overlay drawing');
+
+// ---- Phase 2.5: Camelot preview and effective beats
+assert.equal(m.camelotFor('F', 'minor'), '4A'); assert.equal(m.camelotFor('C', 'major'), '8B'); assert.equal(m.camelotFor('C#', 'minor'), '12A'); assert.equal(m.camelotFor('B', 'major'), '1B');
+assert.equal(m.camelotFor('H', 'major'), null); assert.equal(m.camelotFor('C', null), null); assert.equal(m.camelotFor(null, 'minor'), null);
+const names = m.PITCH_NAMES; const maj = [8,3,10,5,12,7,2,9,4,11,6,1], min = [5,12,7,2,9,4,11,6,1,8,3,10];
+names.forEach((n, i) => { assert.equal(m.camelotFor(n, 'major'), maj[i] + 'B'); assert.equal(m.camelotFor(n, 'minor'), min[i] + 'A'); });
+const detected = {beatsMs: [100, 600, 1100], durationMs: 3000, effective: {gridSource: 'detected', beatGrid: {firstBeatMs: 100, intervalMs: 500}}};
+assert.deepEqual(m.effectiveBeatsMs(detected), [100, 600, 1100], 'uncorrected grid keeps the detected beats');
+const corrected = {beatsMs: [100, 600], durationMs: 2000, effective: {gridSource: 'corrected', beatGrid: {firstBeatMs: 50, intervalMs: 500}}};
+assert.deepEqual(m.effectiveBeatsMs(corrected), [50, 550, 1050, 1550], 'corrected grid is regenerated from first beat and interval');
+assert.deepEqual(m.effectiveBeatsMs(null), []); assert.equal(m.effectiveBeatsMs({beatsMs: [1], durationMs: 10, effective: null}).length, 1);
+console.log('PASS Camelot preview matches the server wheel; effective beats follow the corrected grid');

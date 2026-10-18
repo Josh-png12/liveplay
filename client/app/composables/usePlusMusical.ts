@@ -61,11 +61,19 @@ export function usePlusMusical() {
   async function details(trackId: string) {
     return request<{ status: string; state: string; job: JobState | null; analysis: MusicalAnalysis | null; available: boolean }>(`/analysis/tracks/${encodeURIComponent(trackId)}/musical`);
   }
+  /** Asks the server to load the analysis worker in the background (skipped while playback is protected). Best effort. */
+  async function warmup() { try { await post('/analysis/musical/warmup', {}); } catch { /* the first analysis simply pays the cold start */ } }
+  /** Sets/clears manual corrections. The detected analysis is never changed; the response carries `effective`. */
+  async function correct(trackId: string, change: { set?: Record<string, unknown>; reset?: string | string[]; nudgeGridMs?: number }) {
+    const result: any = await post(`/analysis/tracks/${encodeURIComponent(trackId)}/musical/corrections`, change);
+    await refresh();
+    return result.analysis as MusicalAnalysis;
+  }
   async function suggestions(trackId: string, intents: string[] = []) {
     const query = intents.length ? `?intents=${encodeURIComponent(intents.join(','))}` : '';
     return request<CueSuggestionSet>(`/analysis/tracks/${encodeURIComponent(trackId)}/cue-suggestions${query}`);
   }
   onBeforeUnmount(() => { disposed = true; clearTimeout(timer); for (const c of controllers) c.abort(); });
-  return { summaries, jobs, progress, active, available, error, refresh, poll, analyze, analyzeMode, cancel, details, suggestions };
+  return { summaries, jobs, progress, active, available, error, refresh, poll, analyze, analyzeMode, cancel, details, correct, warmup, suggestions };
 }
 export type PlusMusical = ReturnType<typeof usePlusMusical>;

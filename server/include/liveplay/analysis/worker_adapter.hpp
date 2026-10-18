@@ -28,6 +28,8 @@ public:
     bool health_check();
     // Full health reply (`status:"ok"` plus whatever the worker reports, e.g. capabilities).
     json health_info();
+    // Sends a payload-less request of `type` (e.g. "warmup") and returns the correlated reply.
+    json call(const std::string& type);
     void cancel() noexcept;
     void cancel_current() noexcept override { cancel(); }
     void release() noexcept override;

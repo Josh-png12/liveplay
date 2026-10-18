@@ -1114,10 +1114,26 @@
     "suggestions": "Sugerencias de cue", "suggest": "Sugerir cues", "preview": "Previsualizar", "apply": "Aplicar", "reject": "Rechazar",
     "noSuggestions": "No hay ninguna sugerencia fiable para esta pista.", "suggestNeedsData": "Analiza la pista (o carga su waveform) primero para que haya datos con los que sugerir.",
     "applied": "Se aplicó «{name}» al rango del cue.", "previewNeedsCue": "Crea primero el cue para escuchar una sugerencia.",
+    "scroll": "Desplazar", "corrected": "corregido", "corrections": "Correcciones", "detectedBpm": "BPM detectado", "effectiveBpm": "BPM efectivo",
+    "alternatives": "Alternativas", "useDouble": "Usar ×2", "useHalf": "Usar ÷2", "customBpm": "BPM manual", "reset": "Restablecer", "fine": "Ajuste fino",
+    "detectedKey": "Tonalidad detectada", "correctedKey": "Tonalidad corregida", "scale": "Mayor/menor", "detected": "(detectada)",
+    "setFirstBeat": "Fijar primer beat", "setFirstBeatHint": "Haz clic en la waveform para elegir el instante", "gridLeft": "Rejilla ←", "gridRight": "Rejilla →",
+    "gridOffset": "desfase {ms} ms", "resetToDetected": "Volver a lo detectado",
+    "source": { "detected": "detectado", "factor": "escalado desde lo detectado", "custom": "manual" }, "gridSource": { "detected": "rejilla detectada", "corrected": "rejilla corregida" },
     "status": { "absent": "Sin analizar", "queued": "En cola", "running": "Analizando…", "ready": "Listo", "stale": "Desactualizado", "failed": "Error", "unavailable": "No disponible" },
     "confidence": { "high": "alta", "medium": "media", "low": "baja" },
     "section": { "intro": "Intro", "verse": "Estrofa", "chorus": "Estribillo", "build": "Subida", "drop": "Drop", "break": "Break", "bridge": "Puente", "outro": "Outro", "unknown": "Sección" },
     "intent": { "strong-start": "Inicio potente", "section-start": "Inicio de sección", "high-energy": "Alta energía", "steady-background": "Fondo estable", "clean-outro": "Final limpio" }
+  },
+  "validation": {
+    "diagnostics": "Diagnóstico: validación con música real", "title": "Validación con música real",
+    "description": "Analiza en su sitio los archivos de audio de una carpeta local (no se importa ni se copia nada). Indica la respuesta correcta de cada archivo para obtener métricas; sin expectativas no se muestra ninguna precisión.",
+    "folder": "Carpeta", "folderPlaceholder": "Ruta absoluta dentro de una carpeta de medios permitida", "browse": "Examinar…", "recursive": "Incluir subcarpetas", "start": "Analizar carpeta",
+    "exportJson": "Exportar JSON", "exportCsv": "Exportar CSV", "metrics": "Precisión", "exactBpm": "BPM exacto (±1)", "octaveBpm": "BPM equivalente por octava", "medianError": "Error mediano de BPM",
+    "octaveAdjusted": "ajustado por octava", "keyAccuracy": "Precisión de tonalidad", "camelotAccuracy": "Compatible Camelot", "failures": "Fallos", "avgTime": "Tiempo medio de proceso", "warm": "sin el primer archivo",
+    "smartCue": "Smart Cue Bien / Aceptable / Mal", "goodRate": "tasa de aciertos", "noExpectations": "Indica el BPM o la tonalidad esperados de los archivos que conoces para ver las métricas.",
+    "file": "Archivo", "alternatives": "Alternativas", "expectedBpm": "BPM esperado", "expectedKey": "Tonalidad esperada", "smartCueRating": "Smart Cue", "notes": "Notas",
+    "unavailable": "La validación necesita el worker opcional de análisis musical, que no está disponible en este servidor."
   },
   "workspace": {
     "barLabel": "Paneles del espacio de trabajo",

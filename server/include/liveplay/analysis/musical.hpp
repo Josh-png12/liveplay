@@ -9,10 +9,13 @@
 // ============================================================================
 #include "liveplay/analysis/analysis.hpp"
 #include "liveplay/analysis/worker_adapter.hpp"
+#include <atomic>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace liveplay::analysis {
@@ -40,6 +43,25 @@ json validate_musical(const json& document);
 // Compact view for tables: no beat/section arrays, no curves.
 json musical_summary(const json& document);
 
+// ---- manual corrections (Phase 2.5) -----------------------------------------
+// The detected analysis is never rewritten. A `corrections` object sits beside it:
+//   bpm:          null | {mode:"factor", value:0.5|2|...} | {mode:"custom", value:BPM}
+//   firstBeatMs:  null | absolute time of the first beat of the corrected grid
+//   gridOffsetMs: shift applied to the grid (negative = earlier), default 0
+//   key / scale:  null | override ("F#", "minor"); each is independent
+// Consumers read the *effective* values below instead of the detected ones.
+json empty_corrections();
+// Validates and normalises a corrections object against the detected document
+// (a factor needs a detected BPM; times must fit the track). Throws std::invalid_argument.
+json validate_corrections(const json& corrections, const json& detected);
+// {bpm, bpmSource: detected|factor|custom, bpmConfidence, bpmAmbiguous, beatGrid, gridSource: detected|corrected,
+//  key, scale, camelot, keySource: detected|corrected, corrected}. Never mutates the document.
+json effective_values(const json& document);
+// Beat positions for the effective grid (the detected beats when the grid is uncorrected).
+std::vector<double> effective_beats(const json& document);
+// The document as downstream consumers should see it: bpm/key/camelot/beatGrid/beatsMs replaced by effective values.
+json consumer_view(const json& document);
+
 // Persistent store: analysis/musical/<track_id>.json plus a small derived index
 // (index.json) that backs list views without opening every document. The index
 // is regenerable and rebuilt when it disagrees with the directory.
@@ -51,6 +73,9 @@ public:
     void remove(const std::string& track_id);
     // Keeps the data but flags it stale (the source asset no longer matches).
     void mark_stale(const std::string& track_id);
+    // Replaces the stored corrections (already merged by the caller). Detected data is untouched.
+    // Throws std::invalid_argument for invalid corrections or when no analysis exists.
+    json set_corrections(const std::string& track_id, const json& corrections);
     // absent | ready | stale, relative to the library's current content hash.
     std::string state(const std::string& track_id, const std::string& current_hash) const;
     json summaries() const;
@@ -87,8 +112,22 @@ public:
     void cancel_current() noexcept override { worker_.cancel(); }
     void release() noexcept override { worker_.release(); }
     std::string provider_version() const override { return provider_version_; }
+    ~ExternalMusicalProvider() override;
+    // Controlled warm-up: loads the scientific stack and compiles/loads numba kernels with a short
+    // synthetic analysis so the first real track does not pay the cold start. Runs on its own thread,
+    // only when `blocked()` is false (e.g. playback is not being protected), and lets the worker go
+    // again after `idle_release` without activity. Returns false when skipped or already running.
+    bool warm_up_async(std::function<bool()> blocked, std::chrono::seconds idle_release = std::chrono::minutes(5));
+    std::string warmup_state() const;   // idle | warming | warm | failed
+    json last_warmup() const;
 private:
     std::string provider_id_;
+    mutable std::mutex warm_mutex_;
+    std::string warm_state_ = "idle";
+    json warm_result_;
+    std::atomic<bool> stopping_{false};
+    std::atomic<long long> last_activity_ms_{0};
+    std::thread warm_thread_;
     ExternalAnalysisProvider worker_;
     json capabilities_;
     std::string provider_version_;

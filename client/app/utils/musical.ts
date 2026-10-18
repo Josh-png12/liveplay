@@ -9,6 +9,18 @@ export interface MusicalSummary {
   bpm: number | null; bpmConfidence: number | null; bpmConfidenceLabel: ConfidenceLabel | null; bpmAmbiguous: boolean;
   key: string | null; scale: 'major' | 'minor' | null; camelot: string | null; keyConfidence: number | null;
   energy: number | null; energyLevel: number | null; sectionCount: number; beatCount: number; hasDownbeats: boolean;
+  // Phase 2.5: what consumers should use (detected value unless the operator corrected it).
+  effectiveBpm?: number | null; effectiveKey?: string | null; effectiveScale?: 'major' | 'minor' | null;
+  effectiveCamelot?: string | null; effectiveBpmConfidenceLabel?: ConfidenceLabel | null; corrected?: boolean;
+}
+export interface MusicalCorrections {
+  bpm: { mode: 'factor' | 'custom'; value: number } | null;
+  firstBeatMs: number | null; gridOffsetMs: number; key: string | null; scale: 'major' | 'minor' | null;
+}
+export interface EffectiveValues {
+  bpm: number | null; bpmSource: 'detected' | 'factor' | 'custom'; bpmConfidence: number | null; bpmAmbiguous: boolean;
+  beatGrid: BeatGrid | null; gridSource: 'detected' | 'corrected';
+  key: string | null; scale: 'major' | 'minor' | null; camelot: string | null; keySource: 'detected' | 'corrected'; corrected: boolean;
 }
 export type ConfidenceLabel = 'high' | 'medium' | 'low';
 export interface BeatGrid {
@@ -22,6 +34,7 @@ export interface MusicalAnalysis extends MusicalSummary {
   keyConfidenceLabel: ConfidenceLabel | null; energyConfidence: number | null;
   energyCurve: { hopMs: number; values: number[] } | null; sections: MusicalSection[];
   capabilities: Record<string, unknown>;
+  corrections?: Partial<MusicalCorrections>; effective?: EffectiveValues | null;
 }
 export type AnalysisStatus = 'absent' | 'queued' | 'running' | 'ready' | 'stale' | 'failed' | 'unavailable';
 export interface JobState { status: string; error?: string }
@@ -104,6 +117,8 @@ export function visibleMarkers(timesMs: readonly number[], fromMs: number, toMs:
   return result;
 }
 
+/** Visible time window plus the shared time->x transform (see waveformView.ts). */
+export interface OverlayView { fromMs: number; toMs: number; toX: (ms: number) => number }
 export interface OverlayOptions { beats: boolean; downbeats: boolean; sections: boolean; suggestion?: { startMs: number; endMs: number } | null }
 export interface CanvasLike {
   fillStyle: unknown; strokeStyle: unknown; lineWidth: number; globalAlpha: number;
@@ -119,30 +134,32 @@ export interface CanvasLike {
  */
 export function drawMusicalOverlays(ctx: CanvasLike, width: number, height: number, durationMs: number,
                                     analysis: Pick<MusicalAnalysis, 'beatsMs' | 'downbeatsMs' | 'sections'> | null | undefined,
-                                    options: OverlayOptions, minSpacingPx = 4): { beats: number; downbeats: number; sections: number } {
+                                    options: OverlayOptions, minSpacingPx = 4, view?: OverlayView): { beats: number; downbeats: number; sections: number } {
   const drawn = { beats: 0, downbeats: 0, sections: 0 };
   if (!(durationMs > 0) || width <= 0) return drawn;
-  const x = (ms: number) => (ms / durationMs) * width;
+  const fromMs = view ? view.fromMs : 0, toMs = view ? view.toMs : durationMs;
+  const x = view ? view.toX : (ms: number) => (ms / durationMs) * width;
   if (analysis && options.sections) {
     ctx.globalAlpha = 0.22;
-    for (const section of analysis.sections) {
+    const inView = analysis.sections.filter(section => section.endMs >= fromMs && section.startMs <= toMs);
+    for (const section of inView) {
       ctx.fillStyle = sectionColor(section.type);
       ctx.fillRect(x(section.startMs), 0, Math.max(1, x(section.endMs) - x(section.startMs)), height);
       drawn.sections++;
     }
     ctx.globalAlpha = 0.9;
-    for (const section of analysis.sections) { ctx.fillStyle = sectionColor(section.type); ctx.fillRect(x(section.startMs), 0, 2, height); }
+    for (const section of inView) { if (section.startMs >= fromMs) { ctx.fillStyle = sectionColor(section.type); ctx.fillRect(x(section.startMs), 0, 2, height); } }
     ctx.globalAlpha = 1;
   }
   const maxMarkers = Math.max(1, Math.floor(width / minSpacingPx));
   if (analysis && options.beats) {
     ctx.strokeStyle = 'rgba(255,255,255,0.35)'; ctx.lineWidth = 1; ctx.beginPath();
-    for (const i of visibleMarkers(analysis.beatsMs, 0, durationMs, maxMarkers)) { const px = Math.round(x(analysis.beatsMs[i])) + 0.5; ctx.moveTo(px, height * 0.7); ctx.lineTo(px, height); drawn.beats++; }
+    for (const i of visibleMarkers(analysis.beatsMs, fromMs, toMs, maxMarkers)) { const px = Math.round(x(analysis.beatsMs[i])) + 0.5; ctx.moveTo(px, height * 0.7); ctx.lineTo(px, height); drawn.beats++; }
     ctx.stroke();
   }
   if (analysis && options.downbeats && analysis.downbeatsMs.length) {
     ctx.strokeStyle = 'rgba(255,90,90,0.9)'; ctx.lineWidth = 1.5; ctx.beginPath();
-    for (const i of visibleMarkers(analysis.downbeatsMs, 0, durationMs, maxMarkers)) { const px = Math.round(x(analysis.downbeatsMs[i])) + 0.5; ctx.moveTo(px, 0); ctx.lineTo(px, height); drawn.downbeats++; }
+    for (const i of visibleMarkers(analysis.downbeatsMs, fromMs, toMs, maxMarkers)) { const px = Math.round(x(analysis.downbeatsMs[i])) + 0.5; ctx.moveTo(px, 0); ctx.lineTo(px, height); drawn.downbeats++; }
     ctx.stroke();
   }
   if (options.suggestion) {
@@ -152,3 +169,23 @@ export function drawMusicalOverlays(ctx: CanvasLike, width: number, height: numb
   }
   return drawn;
 }
+
+const CAMELOT_MAJOR = [8, 3, 10, 5, 12, 7, 2, 9, 4, 11, 6, 1], CAMELOT_MINOR = [5, 12, 7, 2, 9, 4, 11, 6, 1, 8, 3, 10];
+export const PITCH_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'] as const;
+/** Instant Camelot preview for the key editor; the server remains authoritative (it recomputes on save). */
+export function camelotFor(key: string | null | undefined, scale: string | null | undefined): string | null {
+  const pitch = PITCH_NAMES.indexOf((key || '') as typeof PITCH_NAMES[number]);
+  if (pitch < 0 || (scale !== 'major' && scale !== 'minor')) return null;
+  return scale === 'major' ? `${CAMELOT_MAJOR[pitch]}B` : `${CAMELOT_MINOR[pitch]}A`;
+}
+/** Beats to draw/use: the corrected constant grid when the operator changed it, otherwise the detected beats. */
+export function effectiveBeatsMs(analysis: Pick<MusicalAnalysis, 'beatsMs' | 'effective' | 'durationMs'> | null | undefined): number[] {
+  if (!analysis) return [];
+  const grid = analysis.effective?.gridSource === 'corrected' ? analysis.effective.beatGrid : null;
+  if (!grid || !(grid.intervalMs > 0)) return analysis.beatsMs;
+  const end = analysis.durationMs ?? 0, beats: number[] = [];
+  for (let t = grid.firstBeatMs; t <= end && beats.length < 32768; t += grid.intervalMs) beats.push(t);
+  return beats;
+}
+/** Detected value, corrected value and the one in effect — the three things the editor shows. */
+export const bpmSourceLabel = (e: EffectiveValues | null | undefined): 'detected' | 'factor' | 'custom' => e?.bpmSource ?? 'detected';

@@ -142,6 +142,75 @@ async function main() {
   assert.deepEqual((await api('/api/project')).body, beforeProject); assert.deepEqual((await api('/api/cues')).body, beforeCues);
   assert.equal((await api(`/api/plus/analysis/tracks/${ids.click120}`)).status, 404, 'musical results do not create the loudness record');
 
+  // ---- manual corrections (Phase 2.5): detected, corrected and effective values coexist
+  const correct = (id, body) => api(`/api/plus/analysis/tracks/${id}/musical/corrections`, body);
+  assert.equal((await correct(ids.click120, { set: { bpm: { mode: 'factor', value: 2 } } })).body.analysis.effective.bpm.toFixed(0), '240');
+  let fixed = (await correct(ids.click120, { set: { bpm: { mode: 'factor', value: 2 } } })).body.analysis;
+  assert(Math.abs(fixed.bpm - 120) < 1 && Math.abs(fixed.effective.bpm - 2 * fixed.bpm) < 1e-6, 'detected BPM is untouched, effective is doubled');
+  assert.equal(fixed.effective.bpmSource, 'factor'); assert.equal(fixed.effective.gridSource, 'corrected'); assert.equal(fixed.beatsMs.length, a.beatsMs.length, 'detected beats are unchanged');
+  fixed = (await correct(ids.click120, { reset: 'bpm' })).body.analysis;
+  assert.equal(fixed.effective.bpmSource, 'detected');
+  fixed = (await correct(ids.minor_f, { set: { key: 'Db', scale: 'major' } })).body.analysis;
+  assert.deepEqual([fixed.key, fixed.scale, fixed.camelot], ['F', 'minor', '4A']);
+  assert.deepEqual([fixed.effective.key, fixed.effective.scale, fixed.effective.camelot, fixed.effective.keySource], ['C#', 'major', '3B', 'corrected']);
+  fixed = (await correct(ids.click120, { set: { firstBeatMs: 300 }, nudgeGridMs: 10 })).body.analysis;
+  assert.equal(fixed.corrections.gridOffsetMs, 10); assert.equal(fixed.effective.gridSource, 'corrected');
+  assert(Math.abs(fixed.effective.beatGrid.firstBeatMs - 310) < 1e-6 || Math.abs(fixed.effective.beatGrid.firstBeatMs - 310 + 500) < 1e-6);
+  assert.equal((await correct(ids.click120, { set: { bpm: { mode: 'custom', value: 5 } } })).status, 400);
+  assert.equal((await correct(ids.click120, { set: { key: 'H' } })).status, 400);
+  assert.equal((await correct(ids.click120, { set: { nonsense: 1 } })).status, 400);
+  assert.equal((await correct(ids.click120, { reset: 'everything' })).status, 400);
+  assert.equal((await correct(`track_${'0'.repeat(64)}`, { reset: 'all' })).status, 404);
+  const summaryNow = (await api('/api/plus/analysis/musical/summaries')).body.summaries;
+  assert.equal(summaryNow[ids.minor_f].effectiveCamelot, '3B'); assert.equal(summaryNow[ids.minor_f].camelot, '4A'); assert.equal(summaryNow[ids.minor_f].corrected, true);
+  const cueFromCorrected = (await api(`/api/plus/analysis/tracks/${ids.variable_energy}/cue-suggestions`)).body;
+  assert.equal(cueFromCorrected.analysisState, 'ready');
+  // re-analysis of the same audio keeps the operator's work
+  await api(`/api/plus/analysis/tracks/${ids.minor_f}/musical`, { force: true });
+  await until(async () => { const r = (await musical(ids.minor_f)).body; return r.job && r.job.status === 'completed' && r.analysis.corrections.key === 'C#' ? r : null; }, 'reanalysis keeps corrections');
+  await correct(ids.minor_f, { reset: 'all' }); await correct(ids.click120, { reset: 'all' });
+  assert.equal((await musical(ids.minor_f)).body.analysis.effective.corrected, false);
+  console.log('PASS corrections: x2, key/scale override with Camelot recalculated, grid first beat + nudge, validation errors, kept across re-analysis, reset');
+
+  // ---- controlled warm-up is explicit, idempotent and reports its state
+  const warm = (await api('/api/plus/analysis/musical/warmup', {})).body;
+  assert(['idle', 'warming', 'warm'].includes(warm.state), JSON.stringify(warm));
+  console.log(`PASS warm-up request accepted (state ${warm.state})`);
+
+  // ---- real-music validation runner (here over the synthetic fixtures: the folder is read in place)
+  assert.equal((await api('/api/plus/validation/runs', { folder: path.join(root, 'plus') })).status, 403, 'folders outside the fs jail are refused');
+  assert.equal((await api('/api/plus/validation/runs', { folder: path.join(inputs, 'nope') })).status, 400);
+  const started = await api('/api/plus/validation/runs', { folder: inputs, recursive: false });
+  assert.equal(started.status, 202); const runId = started.body.id;
+  assert.equal((await api('/api/plus/validation/runs', { folder: inputs })).status, 409, 'one run at a time');
+  const finishedRun = await until(async () => { const r = (await api(`/api/plus/validation/runs/${runId}`)).body; return ['completed', 'failed', 'cancelled'].includes(r.status) ? r : null; }, 'validation run');
+  assert.equal(finishedRun.status, 'completed'); assert.equal(finishedRun.total, 9); assert.equal(finishedRun.done, 9);
+  const byName = Object.fromEntries(finishedRun.entries.map(e => [e.filename, e]));
+  assert(Math.abs(byName['click120.wav'].detectedBpm - 120) < 1 && byName['click120.wav'].analysisDurationMs > 0 && byName['click120.wav'].durationMs > 29000);
+  assert.equal(byName['minor_f.wav'].detectedKey, 'F minor'); assert.equal(byName['minor_f.wav'].camelot, '4A');
+  assert.equal(finishedRun.metrics.exactBpmAccuracy, null, 'no expectations -> no accuracy figures'); assert.equal(finishedRun.metrics.keyAccuracy, null);
+  assert.equal((await api('/api/plus/library/tracks')).body.total, 8, 'validation imports nothing');
+  const edit = (index, body) => api(`/api/plus/validation/runs/${runId}/entries/${index}`, body);
+  const i120 = byName['click120.wav'].index, iF = byName['minor_f.wav'].index, i90 = byName['click90.wav'].index;
+  assert.equal((await edit(i120, { expectedBpm: 2 })).status, 400); assert.equal((await edit(i120, { smartCueRating: 'Great' })).status, 400); assert.equal((await edit(i120, { expectedKey: 'H minor' })).status, 400);
+  await edit(i120, { expectedBpm: 120, smartCueRating: 'Good', notes: 'click track' });
+  await edit(i90, { expectedBpm: 180 });                     // octave-equivalent only
+  const edited = await edit(iF, { expectedKey: 'Fm', expectedBpm: 120 });
+  assert.equal(edited.body.entry.expectedKeyNormalized, 'F minor');
+  const scored = (await api(`/api/plus/validation/runs/${runId}`)).body.metrics;
+  assert.equal(scored.bpmSamples, 3); assert(Math.abs(scored.octaveEquivalentBpmAccuracy - 1) < 1e-9, JSON.stringify(scored));
+  assert(scored.exactBpmAccuracy >= 1 / 3 - 1e-9 && scored.exactBpmAccuracy < 1); assert.equal(scored.keyAccuracy, 1); assert.equal(scored.camelotCompatibleAccuracy, 1);
+  assert(scored.averageProcessingMs > 0); assert.equal(scored.smartCue.good, 1);
+  const csv = await fetch(`http://127.0.0.1:${port}/api/plus/validation/runs/${runId}/export?format=csv`); const csvText = await csv.text();
+  assert.match(csv.headers.get('content-type'), /text\/csv/); assert(csvText.startsWith('filename,duration,detectedBpm')); assert(csvText.includes('click track'));
+  assert.equal(csvText.trim().split('\n').length, 10);
+  const wrapped = (await api(`/api/plus/validation/runs/${runId}/export?format=json&wrap=1`)).body;
+  assert.equal(wrapped.filename, `${runId}.json`); assert.equal(JSON.parse(wrapped.content).entries.length, 9);
+  assert.equal((await api(`/api/plus/validation/runs/${runId}/export?format=xml`)).status, 400);
+  assert.equal((await api('/api/plus/validation/runs/run_unknown')).status, 404);
+  assert((await api('/api/plus/validation/runs')).body.runs.length >= 1);
+  console.log(`PASS validation runner: ${finishedRun.total} files analysed in place, metrics only from operator expectations (exact ${scored.exactBpmAccuracy.toFixed(2)}, octave ${scored.octaveEquivalentBpmAccuracy.toFixed(2)}), CSV/JSON export`);
+
   // ---- cache / stale / persistence
   await stop();
   const file = path.join(root, 'plus', 'analysis', 'musical', `${ids.click120}.json`);

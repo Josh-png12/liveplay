@@ -131,6 +131,12 @@ def main() -> int:
     check(reply["status"] == "ok" and reply["data"]["musical"]["sourceHash"] == "sha256:" + "ab" * 32 and abs(reply["data"]["musical"]["bpm"] - 120) < 0.8,
           "protocol: analyze echoes the source hash used for cache invalidation")
 
+    timings = reply["data"]["musical"].get("timingsMs", {})
+    check(all(k in timings for k in ("importMs", "decodeMs", "onsetMs", "rhythmMs", "keyMs", "energyMs", "structureMs", "totalMs")), "protocol: analyze reports per-stage timings")
+    warm = run([{"protocolVersion": 1, "type": "warmup", "requestId": "w1"}])
+    wreply = json.loads(warm.stdout.splitlines()[0])
+    check(warm.returncode == 0 and wreply["status"] == "ok" and wreply["type"] == "warmup" and wreply["warmupMs"] > 0, "protocol: warmup request compiles/loads the kernels and reports its duration")
+
     print(f"mir worker failures: {failures}")
     return 1 if failures else 0
 

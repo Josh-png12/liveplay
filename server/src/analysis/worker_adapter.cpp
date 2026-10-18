@@ -179,6 +179,14 @@ json ExternalAnalysisProvider::health_info() {
         throw std::runtime_error("analysis worker health mismatch");
     return reply;
 }
+json ExternalAnalysisProvider::call(const std::string& type) {
+    const auto request_id = type + "-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+    json request = {{"protocolVersion", 1}, {"type", type}, {"requestId", request_id}};
+    if (options_.persistent) request["keepAlive"] = true;
+    auto reply = exchange(request);
+    if (reply.value("protocolVersion", 0) != 1 || reply.value("requestId", "") != request_id) throw std::runtime_error("analysis worker reply mismatch");
+    return reply;
+}
 bool ExternalAnalysisProvider::health_check() { return health_info().value("status","") == "ok"; }
 json ExternalAnalysisProvider::execute(const AnalysisJob& job) {
     const auto request_id = job.id + "-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());

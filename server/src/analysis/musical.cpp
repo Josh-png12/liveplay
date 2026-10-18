@@ -224,6 +224,13 @@ json validate_musical(const json& in) {
     }
     out["sections"] = sections;
 
+    // Optional per-stage wall times from the worker (diagnostics only).
+    if (in.contains("timingsMs") && in["timingsMs"].is_object()) {
+        json timings = json::object();
+        for (const auto& [name, value] : in["timingsMs"].items())
+            if (value.is_number() && std::isfinite(value.get<double>()) && timings.size() < 16) timings[name.substr(0, 32)] = value.get<double>();
+        out["timingsMs"] = timings;
+    }
     json capabilities = json::object();
     if (in.contains("capabilities") && in["capabilities"].is_object())
         for (const auto& [name, value] : in["capabilities"].items()) {
@@ -238,8 +245,130 @@ json validate_musical(const json& in) {
     return out;
 }
 
+json empty_corrections() {
+    return {{"bpm", nullptr}, {"firstBeatMs", nullptr}, {"gridOffsetMs", 0.0}, {"key", nullptr}, {"scale", nullptr}};
+}
+
+json validate_corrections(const json& in, const json& detected) {
+    if (!in.is_object()) bad("corrections is not an object");
+    json out = empty_corrections();
+    const auto detected_bpm = number(detected, "bpm", 20, 400);
+    const double duration = number(detected, "durationMs", 0, 24.0 * 3600 * 1000).value_or(24.0 * 3600 * 1000);
+    if (in.contains("bpm") && !in["bpm"].is_null()) {
+        const auto& b = in["bpm"];
+        if (!b.is_object() || !b.contains("value") || !b["value"].is_number()) bad("bpm correction needs {mode, value}");
+        const auto mode = b.value("mode", std::string());
+        const double value = b["value"].get<double>();
+        if (!std::isfinite(value)) bad("bpm correction is not finite");
+        if (mode == "factor") {
+            if (!detected_bpm) bad("a BPM factor needs a detected BPM");
+            if (value < 0.25 || value > 4.0) bad("bpm factor out of range");
+            if (*detected_bpm * value < 20 || *detected_bpm * value > 400) bad("corrected bpm out of range");
+        } else if (mode == "custom") {
+            if (value < 20 || value > 400) bad("custom bpm out of range");
+        } else bad("bpm correction mode must be factor or custom");
+        out["bpm"] = {{"mode", mode}, {"value", value}};
+    }
+    if (in.contains("firstBeatMs") && !in["firstBeatMs"].is_null()) {
+        const auto value = number(in, "firstBeatMs", 0, duration + 2000.0);
+        out["firstBeatMs"] = *value;
+    }
+    if (const auto offset = number(in, "gridOffsetMs", -60000, 60000)) out["gridOffsetMs"] = *offset;
+    if (in.contains("key") && !in["key"].is_null()) {
+        const auto key = in["key"].is_string() ? normalize_key_name(in["key"].get<std::string>()) : std::nullopt;
+        if (!key) bad("unrecognised key correction");
+        out["key"] = *key;
+    }
+    if (in.contains("scale") && !in["scale"].is_null()) {
+        const auto scale = in["scale"].is_string() ? normalize_scale(in["scale"].get<std::string>()) : std::nullopt;
+        if (!scale) bad("scale correction must be major or minor");
+        out["scale"] = *scale;
+    }
+    // A grid correction needs a tempo to build on: a corrected BPM or a detected one.
+    const bool grid_touched = !out["firstBeatMs"].is_null() || out["gridOffsetMs"].get<double>() != 0.0;
+    if (grid_touched && out["bpm"].is_null() && !detected_bpm) bad("grid correction needs a BPM (detected or corrected)");
+    return out;
+}
+
+namespace {
+bool has_grid_correction(const json& c) {
+    return c.is_object() && (!c.value("bpm", json(nullptr)).is_null() || !c.value("firstBeatMs", json(nullptr)).is_null() || c.value("gridOffsetMs", 0.0) != 0.0);
+}
+json corrected_grid(const json& d, double bpm, const json& c) {
+    const double interval = 60000.0 / bpm;
+    double first;
+    if (!c.value("firstBeatMs", json(nullptr)).is_null()) first = c["firstBeatMs"].get<double>();
+    else if (d.contains("beatGrid") && d["beatGrid"].is_object()) first = d["beatGrid"].value("firstBeatMs", 0.0);
+    else if (d.contains("beatsMs") && d["beatsMs"].is_array() && !d["beatsMs"].empty()) first = d["beatsMs"][0].get<double>();
+    else first = 0.0;
+    first += c.value("gridOffsetMs", 0.0);
+    first = std::fmod(first, interval);          // the grid is periodic; keep its first beat inside the first interval
+    if (first < 0) first += interval;
+    const double end = d.value("durationMs", json(nullptr)).is_number() ? d["durationMs"].get<double>() : first + interval;
+    return {{"firstBeatMs", first}, {"intervalMs", interval}, {"tempo", bpm}, {"confidence", 1.0}, {"constantTempo", true},
+            {"segments", json::array({{{"startMs", first}, {"endMs", std::max(end, first)}, {"bpm", bpm}}})}};
+}
+}
+
+json effective_values(const json& d) {
+    const json c = d.contains("corrections") && d["corrections"].is_object() ? d["corrections"] : json::object();
+    json out = {{"bpmSource", "detected"}, {"gridSource", "detected"}, {"keySource", "detected"}, {"corrected", false}};
+    const auto detected_bpm = d.contains("bpm") && d["bpm"].is_number() ? std::optional<double>(d["bpm"].get<double>()) : std::nullopt;
+    std::optional<double> bpm = detected_bpm;
+    out["bpmConfidence"] = d.value("bpmConfidence", json(nullptr));
+    out["bpmAmbiguous"] = d.value("bpmAmbiguous", false);
+    if (c.contains("bpm") && c["bpm"].is_object()) {
+        const auto& b = c["bpm"];
+        if (b.value("mode", std::string()) == "factor" && detected_bpm) { bpm = *detected_bpm * b["value"].get<double>(); out["bpmSource"] = "factor"; }
+        else if (b.value("mode", std::string()) == "custom") { bpm = b["value"].get<double>(); out["bpmSource"] = "custom"; }
+        if (out["bpmSource"] != "detected") { out["bpmConfidence"] = 1.0; out["bpmAmbiguous"] = false; out["corrected"] = true; }
+    }
+    out["bpm"] = bpm ? json(*bpm) : json(nullptr);
+    out["beatGrid"] = d.value("beatGrid", json(nullptr));
+    if (bpm && has_grid_correction(c)) {
+        out["beatGrid"] = corrected_grid(d, *bpm, c); out["gridSource"] = "corrected"; out["corrected"] = true;
+    }
+    json key = d.value("key", json(nullptr)), scale = d.value("scale", json(nullptr));
+    if (c.contains("key") && c["key"].is_string()) { key = c["key"]; out["keySource"] = "corrected"; }
+    if (c.contains("scale") && c["scale"].is_string()) { scale = c["scale"]; out["keySource"] = "corrected"; }
+    if (out["keySource"] == "corrected") out["corrected"] = true;
+    out["key"] = key; out["scale"] = scale;
+    const auto code = key.is_string() && scale.is_string() ? camelot_for(key.get<std::string>(), scale.get<std::string>()) : std::nullopt;
+    out["camelot"] = code ? json(*code) : json(nullptr);
+    return out;
+}
+
+std::vector<double> effective_beats(const json& d) {
+    std::vector<double> beats;
+    const auto effective = effective_values(d);
+    if (effective["gridSource"] == "corrected" && effective["beatGrid"].is_object()) {
+        const auto& g = effective["beatGrid"];
+        const double interval = g["intervalMs"].get<double>(), end = d.value("durationMs", json(nullptr)).is_number() ? d["durationMs"].get<double>() : 0.0;
+        for (double t = g["firstBeatMs"].get<double>(); t <= end && beats.size() < 32768; t += interval) beats.push_back(t);
+    } else if (d.contains("beatsMs") && d["beatsMs"].is_array()) {
+        for (const auto& b : d["beatsMs"]) beats.push_back(b.get<double>());
+    }
+    return beats;
+}
+
+json consumer_view(const json& d) {
+    json view = d;
+    const auto e = effective_values(d);
+    view["bpm"] = e["bpm"]; view["bpmConfidence"] = e["bpmConfidence"]; view["bpmAmbiguous"] = e["bpmAmbiguous"];
+    view["beatGrid"] = e["beatGrid"]; view["key"] = e["key"]; view["scale"] = e["scale"]; view["camelot"] = e["camelot"];
+    const auto beats = effective_beats(d);
+    view["beatsMs"] = json(beats);
+    return view;
+}
+
 json musical_summary(const json& d) {
-    return {{"trackId", d.value("trackId", std::string())}, {"provider", d.value("provider", std::string())},
+    json effective = json::object();
+    try { effective = effective_values(d); } catch (...) {}
+    return {{"effectiveBpm", effective.value("bpm", json(nullptr))}, {"effectiveKey", effective.value("key", json(nullptr))},
+        {"effectiveScale", effective.value("scale", json(nullptr))}, {"effectiveCamelot", effective.value("camelot", json(nullptr))},
+        {"effectiveBpmConfidenceLabel", effective.value("bpmConfidence", json(nullptr)).is_number() ? json(confidence_label(effective["bpmConfidence"].get<double>())) : json(nullptr)},
+        {"corrected", effective.value("corrected", false)},
+        {"trackId", d.value("trackId", std::string())}, {"provider", d.value("provider", std::string())},
         {"analyzedAt", d.value("analyzedAt", std::string())}, {"sourceHash", d.value("sourceHash", std::string())},
         {"stale", d.value("stale", false)},
         {"bpm", d.value("bpm", json(nullptr))}, {"bpmConfidence", d.value("bpmConfidence", json(nullptr))},
@@ -296,6 +425,7 @@ std::optional<json> MusicalAnalysisStore::find(const std::string& id) const {
     if (!fs::exists(path)) return std::nullopt;
     auto doc = util::read_bounded_json(path, max_document_bytes * 2);
     doc["trackId"] = id;
+    try { doc["effective"] = effective_values(doc); } catch (...) { doc["effective"] = nullptr; }
     return doc;
 }
 void MusicalAnalysisStore::save(const std::string& id, json doc) {
@@ -303,6 +433,14 @@ void MusicalAnalysisStore::save(const std::string& id, json doc) {
     doc = validate_musical(doc);
     doc["trackId"] = id;
     std::lock_guard lock(mutex_);
+    // Re-analysis of the same audio keeps the operator's corrections; changed audio invalidates them.
+    if (const auto previous_path = root_ / (id + ".json"); fs::exists(previous_path)) {
+        try {
+            const auto previous = util::read_bounded_json(previous_path, max_document_bytes * 2);
+            if (previous.value("sourceHash", std::string()) == doc.value("sourceHash", std::string()) && previous.contains("corrections") && previous["corrections"].is_object())
+                doc["corrections"] = validate_corrections(previous["corrections"], doc);
+        } catch (...) { /* unreadable or no longer valid corrections are dropped */ }
+    }
     util::atomic_write_json(root_ / (id + ".json"), doc);
     index_[id] = musical_summary(doc);
     write_index();
@@ -325,6 +463,20 @@ void MusicalAnalysisStore::mark_stale(const std::string& id) {
     doc["trackId"] = id;
     index_[id] = musical_summary(doc);
     write_index();
+}
+json MusicalAnalysisStore::set_corrections(const std::string& id, const json& corrections) {
+    if (!valid_track(id)) throw std::invalid_argument("invalid track ID");
+    std::lock_guard lock(mutex_);
+    const auto path = root_ / (id + ".json");
+    if (!fs::exists(path)) throw std::invalid_argument("track has no musical analysis to correct");
+    auto doc = util::read_bounded_json(path, max_document_bytes * 2);
+    doc["corrections"] = validate_corrections(corrections, doc);
+    util::atomic_write_json(path, doc);
+    doc["trackId"] = id;
+    index_[id] = musical_summary(doc);
+    write_index();
+    doc["effective"] = effective_values(doc);
+    return doc;
 }
 std::string MusicalAnalysisStore::state(const std::string& id, const std::string& current_hash) const {
     std::lock_guard lock(mutex_);
@@ -359,8 +511,47 @@ json ExternalMusicalProvider::capabilities() const {
             {"tonality", capabilities_.value("keyDetection", false)}, {"structure", capabilities_.value("structureAnalysis", false)},
             {"semantic", false}, {"stems", false}};
 }
+namespace {
+long long now_ms() { return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+}
+ExternalMusicalProvider::~ExternalMusicalProvider() {
+    stopping_ = true;
+    worker_.cancel();
+    if (warm_thread_.joinable()) warm_thread_.join();
+}
+std::string ExternalMusicalProvider::warmup_state() const { std::lock_guard lock(warm_mutex_); return warm_state_; }
+json ExternalMusicalProvider::last_warmup() const { std::lock_guard lock(warm_mutex_); return warm_result_; }
+bool ExternalMusicalProvider::warm_up_async(std::function<bool()> blocked, std::chrono::seconds idle_release) {
+    {
+        std::lock_guard lock(warm_mutex_);
+        if (warm_state_ == "warming" || (warm_state_ == "warm" && now_ms() - last_activity_ms_ < 60'000)) return false;
+        if (blocked && blocked()) return false;
+        warm_state_ = "warming";
+    }
+    if (warm_thread_.joinable()) warm_thread_.join();   // a previous warm-up has finished (state != warming)
+    last_activity_ms_ = now_ms();
+    warm_thread_ = std::thread([this, idle_release] {
+        json outcome;
+        try {
+            const auto reply = worker_.call("warmup");
+            outcome = reply.value("status", "") == "ok" ? json{{"status", "ok"}, {"warmupMs", reply.value("warmupMs", 0.0)}} : json{{"status", "error"}, {"error", reply.value("error", std::string("warm-up failed"))}};
+        } catch (const std::exception& e) { outcome = {{"status", "error"}, {"error", e.what()}}; }
+        {
+            std::lock_guard lock(warm_mutex_);
+            warm_result_ = outcome; warm_state_ = outcome["status"] == "ok" ? "warm" : "failed";
+        }
+        last_activity_ms_ = now_ms();
+        // Keep the warmed worker only while it is useful; analysis jobs refresh last_activity_ms_.
+        while (!stopping_ && outcome["status"] == "ok" && now_ms() - last_activity_ms_ < std::chrono::duration_cast<std::chrono::milliseconds>(idle_release).count())
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        if (!stopping_) { worker_.release(); std::lock_guard lock(warm_mutex_); if (warm_state_ == "warm") warm_state_ = "idle"; }
+    });
+    return true;
+}
 json ExternalMusicalProvider::execute(const AnalysisJob& job) {
+    last_activity_ms_ = now_ms();
     auto result = worker_.execute(job);
+    last_activity_ms_ = now_ms();
     if (!result.contains("musical")) throw std::runtime_error("musical worker returned no analysis");
     auto document = validate_musical(result["musical"]);
     if (document.at("sourceHash") != job.content_hash) throw std::runtime_error("musical analysis belongs to a different source hash");

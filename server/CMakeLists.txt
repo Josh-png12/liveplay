@@ -175,6 +175,7 @@ add_executable(liveplay-server
     src/analysis/analysis.cpp
         src/analysis/worker_adapter.cpp
         src/analysis/musical.cpp
+        src/analysis/validation_runner.cpp
         src/library/cue_suggestions.cpp
         src/library/atomic_json.cpp
     src/library/track_repository.cpp
@@ -408,6 +409,7 @@ if(LIVEPLAY_BUILD_TESTS)
         src/analysis/analysis.cpp
         src/analysis/worker_adapter.cpp
         src/analysis/musical.cpp
+        src/analysis/validation_runner.cpp
         src/library/cue_suggestions.cpp
         src/library/atomic_json.cpp
         src/library/track_repository.cpp

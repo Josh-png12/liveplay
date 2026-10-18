@@ -1114,10 +1114,26 @@
     "suggestions": "Cue suggestions", "suggest": "Suggest cues", "preview": "Preview", "apply": "Apply", "reject": "Reject",
     "noSuggestions": "No reliable suggestion for this track.", "suggestNeedsData": "Analyze the track (or load its waveform) first so suggestions have something to work with.",
     "applied": "Applied “{name}” to the cue range.", "previewNeedsCue": "Create the cue first to audition a suggestion.",
+    "scroll": "Scroll", "corrected": "corrected", "corrections": "Corrections", "detectedBpm": "Detected BPM", "effectiveBpm": "Effective BPM",
+    "alternatives": "Alternatives", "useDouble": "Use ×2", "useHalf": "Use ÷2", "customBpm": "Custom BPM", "reset": "Reset", "fine": "Fine adjustment",
+    "detectedKey": "Detected key", "correctedKey": "Corrected key", "scale": "Major/minor", "detected": "(detected)",
+    "setFirstBeat": "Set first beat", "setFirstBeatHint": "Click the waveform to choose the time first", "gridLeft": "Grid left", "gridRight": "Grid right",
+    "gridOffset": "offset {ms} ms", "resetToDetected": "Reset to detected",
+    "source": { "detected": "detected", "factor": "scaled from detected", "custom": "manual" }, "gridSource": { "detected": "detected grid", "corrected": "corrected grid" },
     "status": { "absent": "Not analyzed", "queued": "Queued", "running": "Analyzing…", "ready": "Ready", "stale": "Outdated", "failed": "Failed", "unavailable": "Unavailable" },
     "confidence": { "high": "high", "medium": "medium", "low": "low" },
     "section": { "intro": "Intro", "verse": "Verse", "chorus": "Chorus", "build": "Build", "drop": "Drop", "break": "Break", "bridge": "Bridge", "outro": "Outro", "unknown": "Section" },
     "intent": { "strong-start": "Strong Start", "section-start": "Section Start", "high-energy": "High Energy", "steady-background": "Steady Background", "clean-outro": "Clean Outro" }
+  },
+  "validation": {
+    "diagnostics": "Diagnostics: real music validation", "title": "Real music validation",
+    "description": "Analyses the audio files of a local folder in place (nothing is imported or copied). Enter what the right answer is for each file to get accuracy figures; without expectations no accuracy is reported.",
+    "folder": "Folder", "folderPlaceholder": "Absolute path inside an allowed media folder", "browse": "Browse…", "recursive": "Include sub-folders", "start": "Analyze folder",
+    "exportJson": "Export JSON", "exportCsv": "Export CSV", "metrics": "Accuracy", "exactBpm": "Exact BPM (±1)", "octaveBpm": "Octave-equivalent BPM", "medianError": "Median BPM error",
+    "octaveAdjusted": "octave-adjusted", "keyAccuracy": "Key accuracy", "camelotAccuracy": "Camelot-compatible", "failures": "Failures", "avgTime": "Average processing time", "warm": "excluding first file",
+    "smartCue": "Smart Cue Good / Acceptable / Bad", "goodRate": "good rate", "noExpectations": "Enter expected BPM or key for the files you know to see accuracy figures.",
+    "file": "File", "alternatives": "Alternatives", "expectedBpm": "Expected BPM", "expectedKey": "Expected key", "smartCueRating": "Smart Cue", "notes": "Notes",
+    "unavailable": "Validation needs the optional music analysis worker, which is not available on this server."
   },
   "workspace": {
     "barLabel": "Workspace panes",

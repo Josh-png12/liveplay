@@ -2,6 +2,7 @@
 // stale handling, cue suggestions and scheduler integration (cancel / crash /
 // missing provider). Worker-level DSP quality is covered by tests/mir/test_worker.py.
 #include "liveplay/analysis/musical.hpp"
+#include "liveplay/analysis/validation_runner.hpp"
 #include "liveplay/library/cue_suggestions.hpp"
 #include "liveplay/library/maintenance.hpp"
 #include "liveplay/util/unicode_path.hpp"
@@ -319,6 +320,226 @@ void cue_tests() {
         library::CueSuggestion s; s.intent = "first-ten-seconds"; s.label = "First Ten Seconds"; s.start_ms = 0; s.end_ms = std::min<std::int64_t>(10000, c.duration_ms); s.confidence = 0.5; s.reason = "custom"; return s; });
     check(find_suggestion(provider.suggest(input, {"first-ten-seconds"}), "first-ten-seconds") != nullptr && provider.intents().size() == 6, "custom intents can be registered");
 }
+
+// ---- manual corrections (Phase 2.5) ----------------------------------------
+void corrections_tests(const fs::path& root) {
+    const std::string hash = "sha256:" + std::string(64, 'a');
+    auto doc = analysis::validate_musical(sample_document(hash));
+    const auto with = [&](json corrections) { auto d = doc; d["corrections"] = analysis::validate_corrections(corrections, d); return d; };
+
+    auto plain = analysis::effective_values(doc);
+    check(plain["bpm"] == 128.0 && plain["bpmSource"] == "detected" && plain["gridSource"] == "detected" && plain["keySource"] == "detected" &&
+          plain["corrected"] == false && plain["camelot"] == "4A", "no corrections: effective values equal detected");
+    check(analysis::effective_beats(doc).size() == doc["beatsMs"].size(), "no corrections: detected beats are used");
+
+    auto doubled = with({{"bpm", {{"mode", "factor"}, {"value", 2.0}}}});
+    auto e = analysis::effective_values(doubled);
+    check(e["bpm"] == 256.0 && e["bpmSource"] == "factor" && e["bpmConfidence"] == 1.0 && e["bpmAmbiguous"] == false && e["gridSource"] == "corrected" &&
+          std::abs(e["beatGrid"]["intervalMs"].get<double>() - 60000.0 / 256.0) < 1e-6, "BPM x2: effective 256, grid follows the new tempo");
+    auto halved = analysis::effective_values(with({{"bpm", {{"mode", "factor"}, {"value", 0.5}}}}));
+    check(halved["bpm"] == 64.0 && halved["bpmSource"] == "factor", "BPM /2: effective 64");
+    auto custom = analysis::effective_values(with({{"bpm", {{"mode", "custom"}, {"value", 127.4}}}}));
+    check(custom["bpm"] == 127.4 && custom["bpmSource"] == "custom", "custom BPM");
+    check(doubled["bpm"] == 128.0 && doubled["beatsMs"] == doc["beatsMs"] && doubled["beatGrid"] == doc["beatGrid"], "the detected analysis is never rewritten by corrections");
+
+    check(throws([&] { with({{"bpm", {{"mode", "custom"}, {"value", 10.0}}}}); }) && throws([&] { with({{"bpm", {{"mode", "factor"}, {"value", 50.0}}}}); }) &&
+          throws([&] { with({{"bpm", {{"mode", "weird"}, {"value", 100.0}}}}); }) && throws([&] { with({{"bpm", {{"mode", "factor"}}}}); }), "invalid BPM corrections rejected");
+    auto silent = analysis::validate_musical({{"schemaVersion", 1}, {"provider", "p"}, {"analyzedAt", "2026-01-01T00:00:00Z"}, {"sourceHash", hash}, {"durationMs", 30000}});
+    check(throws([&] { analysis::validate_corrections({{"bpm", {{"mode", "factor"}, {"value", 2.0}}}}, silent); }), "a factor needs a detected BPM");
+    check(throws([&] { analysis::validate_corrections({{"firstBeatMs", 100.0}}, silent); }) && !throws([&] { analysis::validate_corrections({{"firstBeatMs", 100.0}, {"bpm", {{"mode", "custom"}, {"value", 90.0}}}}, silent); }),
+          "a grid correction on an undetected track needs a BPM");
+    auto manual_doc = silent; manual_doc["corrections"] = analysis::validate_corrections({{"firstBeatMs", 100.0}, {"bpm", {{"mode", "custom"}, {"value", 90.0}}}}, silent);
+    auto manual = analysis::effective_values(manual_doc);
+    check(manual["bpm"] == 90.0 && manual["beatGrid"]["firstBeatMs"] == 100.0, "an operator can supply tempo and grid for a track the detector gave up on");
+
+    auto shifted = with({{"firstBeatMs", 1000.0}, {"gridOffsetMs", -25.0}});
+    const auto beats = analysis::effective_beats(shifted);
+    bool spaced = beats.size() > 300; for (std::size_t i = 1; i < beats.size(); ++i) spaced &= std::abs(beats[i] - beats[i - 1] - 468.75) < 1e-6;
+    check(spaced && beats.front() >= 0 && beats.front() < 468.75 && beats.back() <= 155000.0, "corrected beats are a regular grid inside the track");
+    // 975 mod 468.75 = 37.5: first beat + offset define the phase.
+    check(std::abs(beats.front() - 37.5) < 1e-6, "first beat + offset define the grid phase");
+    const auto grid_first = [&](double offset) { return analysis::effective_values(with({{"gridOffsetMs", offset}, {"bpm", {{"mode", "custom"}, {"value", 128.0}}}}))["beatGrid"]["firstBeatMs"].get<double>(); };
+    const double move = grid_first(10.0) - grid_first(0.0);
+    check(std::abs(move - 10.0) < 1e-6 || std::abs(move + 468.75 - 10.0) < 1e-6, "moving the grid right by 10 ms shifts every beat by 10 ms");
+    check(throws([&] { with({{"gridOffsetMs", 1e9}}); }) && throws([&] { with({{"firstBeatMs", -5.0}}); }) && throws([&] { with({{"firstBeatMs", 999999999.0}}); }), "grid corrections stay inside sane bounds");
+
+    auto keyed = analysis::effective_values(with({{"key", "G"}}));
+    check(keyed["key"] == "G" && keyed["scale"] == "minor" && keyed["camelot"] == "6A" && keyed["keySource"] == "corrected", "key override keeps the detected scale; Camelot recalculated (G minor = 6A)");
+    keyed = analysis::effective_values(with({{"scale", "major"}}));
+    check(keyed["key"] == "F" && keyed["scale"] == "major" && keyed["camelot"] == "7B", "scale override: F major = 7B");
+    keyed = analysis::effective_values(with({{"key", "Db"}, {"scale", "MINOR"}}));
+    check(keyed["key"] == "C#" && keyed["camelot"] == "12A", "enharmonic key override normalised (Db minor -> C# minor = 12A)");
+    check(throws([&] { with({{"key", "H"}}); }) && throws([&] { with({{"scale", "dorian"}}); }), "invalid key corrections rejected");
+    auto keyed_doc = silent; keyed_doc["corrections"] = analysis::validate_corrections({{"key", "A"}, {"scale", "minor"}}, silent);
+    check(analysis::effective_values(silent)["camelot"].is_null() && analysis::effective_values(keyed_doc)["camelot"] == "8A", "an operator key on an unkeyed track yields a Camelot code");
+
+    // Consumers: Smart Cue snaps to the corrected grid, not the detected one.
+    library::RuleBasedCueSuggestionProvider cues;
+    library::CueSuggestionInput input; input.duration_ms = 155000;
+    input.musical = analysis::consumer_view(with({{"bpm", {{"mode", "custom"}, {"value", 100.0}}}, {"firstBeatMs", 100.0}}));
+    check(input.musical["bpm"] == 100.0 && input.musical["bpmConfidence"] == 1.0, "consumer view exposes effective BPM with full confidence");
+    const auto set = cues.suggest(input, {"strong-start"});
+    check(!set.suggestions.empty() && on_grid(static_cast<double>(set.suggestions[0].start_ms), 100.0, 100.0), "Smart Cue uses the corrected beat grid");
+
+    // Store: corrections persist, survive re-analysis of the same audio, and are dropped when the audio changes.
+    const auto dir = root / "corrections";
+    {
+        analysis::MusicalAnalysisStore store(dir);
+        check(throws([&] { store.set_corrections(track_id('9'), analysis::empty_corrections()); }), "cannot correct a track that has no analysis");
+        store.save(track_id('1'), sample_document(hash));
+        auto updated = store.set_corrections(track_id('1'), {{"bpm", {{"mode", "factor"}, {"value", 0.5}}}, {"key", "A"}, {"scale", "minor"}});
+        check(updated["effective"]["bpm"] == 64.0 && updated["effective"]["camelot"] == "8A" && updated["bpm"] == 128.0 && updated["key"] == "F", "stored corrections sit beside the untouched detection");
+        const auto summary = store.summaries()[track_id('1')];
+        check(summary["effectiveBpm"] == 64.0 && summary["effectiveCamelot"] == "8A" && summary["corrected"] == true && summary["bpm"] == 128.0 && summary["camelot"] == "4A", "summaries carry detected and effective values");
+        store.save(track_id('1'), sample_document(hash, 127.0));
+        auto again = *store.find(track_id('1'));
+        check(again["bpm"] == 127.0 && again["effective"]["bpm"] == 63.5 && again["effective"]["key"] == "A", "re-analysis of the same audio keeps the corrections");
+        store.save(track_id('1'), sample_document("sha256:" + std::string(64, 'c')));
+        again = *store.find(track_id('1'));
+        check(again["effective"]["bpmSource"] == "detected" && again["effective"]["corrected"] == false, "corrections are dropped when the audio changed");
+        store.set_corrections(track_id('1'), {{"gridOffsetMs", 5.0}});
+    }
+    { analysis::MusicalAnalysisStore reopened(dir); check((*reopened.find(track_id('1')))["corrections"]["gridOffsetMs"] == 5.0, "corrections survive restart"); }
+}
+
+// ---- real-music validation runner (Phase 2.5) -------------------------------
+class RunnerProvider final : public analysis::MusicalAnalysisProvider {
+public:
+    std::atomic<bool> cancelled{false};
+    std::string id() const override { return "fake-mir"; }
+    json capabilities() const override { return {}; }
+    json musical_capabilities() const override { return {}; }
+    std::string provider_version() const override { return "fake 1"; }
+    void cancel_current() noexcept override { cancelled = true; }
+    json execute(const analysis::AnalysisJob& job) override {
+        const auto name = fs::path(job.asset_path).filename().string();
+        if (name.find("bad") != std::string::npos) throw std::runtime_error("cannot decode " + name);
+        if (name.find("slow") != std::string::npos) { cancelled = false; while (!cancelled) std::this_thread::sleep_for(std::chrono::milliseconds(5)); throw std::runtime_error("analysis worker cancelled"); }
+        double bpm = name.find("half") != std::string::npos ? 64.0 : name.find("off") != std::string::npos ? 131.0 : 128.0;
+        auto doc = sample_document(job.content_hash, bpm);
+        if (name.find("relative") != std::string::npos) { doc["key"] = "A"; doc["scale"] = "minor"; }   // 8A = relative of F? no: F minor is 4A
+        if (name.find("nokey") != std::string::npos) { doc["key"] = nullptr; doc["scale"] = nullptr; }
+        auto result = analysis::empty_analysis(job.track_id);
+        result["musical"] = analysis::validate_musical(doc);
+        return result;
+    }
+};
+
+json metric_entry(double detected, json expected, const char* key = nullptr, const char* scale = nullptr, json expected_key = nullptr, double ms = 100, const char* rating = nullptr) {
+    return {{"status", "done"}, {"detectedBpm", detected}, {"expectedBpm", expected}, {"detectedKeyName", key ? json(key) : json(nullptr)},
+            {"detectedScale", scale ? json(scale) : json(nullptr)}, {"expectedKey", expected_key}, {"analysisDurationMs", ms}, {"smartCueRating", rating ? json(rating) : json(nullptr)}};
+}
+
+void runner_validation_tests(const fs::path& root) {
+    // Key label parsing and Camelot compatibility.
+    const auto parsed = [](const char* s) { const auto k = analysis::parse_key_label(s); return k ? k->key + " " + k->scale : std::string("none"); };
+    check(parsed("F minor") == "F minor" && parsed("Fm") == "F minor" && parsed("F#m") == "F# minor" && parsed("Db major") == "C# major" && parsed("C") == "C major" &&
+          parsed("Bbm") == "A# minor" && parsed("Bm") == "B minor" && parsed("a min") == "A minor" && parsed("Cmaj") == "C major", "expected-key labels parse (letters, accidentals, m/min/maj)");
+    check(parsed("8A") == "A minor" && parsed("4a") == "F minor" && parsed("8B") == "C major" && parsed("12A") == "C# minor", "Camelot codes are accepted as expected keys");
+    check(parsed("") == "none" && parsed("H minor") == "none" && parsed("C dorian") == "none" && parsed("13A") == "none", "unparseable labels are rejected");
+    check(analysis::camelot_compatible("8A", "8A") && analysis::camelot_compatible("8A", "9A") && analysis::camelot_compatible("8A", "7A") && analysis::camelot_compatible("1A", "12A") &&
+          analysis::camelot_compatible("8A", "8B") && !analysis::camelot_compatible("8A", "10A") && !analysis::camelot_compatible("8A", "9B") && !analysis::camelot_compatible("8A", "bogus"), "Camelot compatibility: same, +-1 on the ring (wrapping), relative major/minor");
+
+    // Metrics: nothing invented without expectations.
+    const auto none = analysis::validation_metrics(json::array({metric_entry(120, nullptr), metric_entry(90, nullptr)}));
+    check(none["analysed"] == 2 && none["exactBpmAccuracy"].is_null() && none["octaveEquivalentBpmAccuracy"].is_null() && none["medianBpmError"].is_null() &&
+          none["keyAccuracy"].is_null() && none["camelotCompatibleAccuracy"].is_null() && none["smartCue"]["goodRate"].is_null() && none["averageProcessingMs"] == 100.0,
+          "without expectations every accuracy figure is null (only processing time is reported)");
+    check(analysis::validation_metrics(json::array())["analysed"] == 0 && analysis::validation_metrics(json::array())["averageProcessingMs"].is_null(), "empty run has no figures");
+
+    json entries = json::array({
+        metric_entry(120.0, 120.0, "F", "minor", "F minor", 9000),     // exact BPM, exact key
+        metric_entry(60.0, 120.0, "A", "minor", "F minor", 1000),      // half-time: octave ok; A minor 8A vs F minor 4A: not compatible
+        metric_entry(131.0, 128.0, "C", "major", "A minor", 1200),     // off by 3: wrong; C major 8B vs A minor 8A: relative = compatible
+        metric_entry(100.0, 100.5, "G", "minor", "D minor", 800),      // within 1 BPM: exact; 6A vs 7A adjacent = compatible
+        metric_entry(90.0, nullptr, nullptr, nullptr, nullptr, 1000, "Good"),
+        {{"status", "failed"}, {"filename", "x.mp3"}, {"error", "decode"}},
+        metric_entry(110.0, 55.0, nullptr, nullptr, "8A", 1000, "Bad")});   // expected half of detected; no key detected -> wrong key
+    const auto m = analysis::validation_metrics(entries);
+    check(m["analysed"] == 6 && m["failures"] == 1 && m["failureList"][0]["filename"] == "x.mp3", "failures are counted and listed");
+    check(m["bpmSamples"] == 5 && std::abs(m["exactBpmAccuracy"].get<double>() - 2.0 / 5.0) < 1e-9, "exact BPM accuracy within 1 BPM: 2/5");
+    check(std::abs(m["octaveEquivalentBpmAccuracy"].get<double>() - 4.0 / 5.0) < 1e-9, "octave-equivalent accuracy accepts x2 and /2: 4/5");
+    check(std::abs(m["medianBpmError"].get<double>() - 3.0) < 1e-9 && std::abs(m["medianBpmErrorOctaveAdjusted"].get<double>()) < 1e-9, "median BPM error: raw 3.0 BPM, octave-adjusted 0.0 BPM");
+    check(m["keySamples"] == 5 && std::abs(m["keyAccuracy"].get<double>() - 1.0 / 5.0) < 1e-9, "exact key accuracy: 1/5 (a missed key counts as wrong)");
+    check(std::abs(m["camelotCompatibleAccuracy"].get<double>() - 3.0 / 5.0) < 1e-9, "Camelot-compatible accuracy includes exact, adjacent and relative: 3/5");
+    check(std::abs(m["averageProcessingMs"].get<double>() - 2333.3333333) < 1e-3 && std::abs(m["averageWarmProcessingMs"].get<double>() - 1000.0) < 1e-6, "average processing time, with and without the cold first file");
+    check(m["smartCue"]["good"] == 1 && m["smartCue"]["bad"] == 1 && std::abs(m["smartCue"]["goodRate"].get<double>() - 0.5) < 1e-9, "Smart Cue ratings summarised");
+
+    // Runner end to end with a fake provider.
+    const auto music = root / "music"; fs::create_directories(music / "sub");
+    const auto write = [](const fs::path& p, const std::string& text) { std::ofstream(p, std::ios::binary) << text; };
+    write(music / "a_plain.wav", "aaaa"); write(music / "b_half.mp3", "bbbb"); write(music / "c_bad.flac", "cccc"); write(music / "notes.txt", "ignore me");
+    write(music / "sub" / "d_nokey.wav", "dddd");
+    std::atomic<int> created{0};
+    std::shared_ptr<RunnerProvider> provider;
+    analysis::MusicValidationRunner runner(root / "validation", [&] { ++created; provider = std::make_shared<RunnerProvider>(); return provider; });
+    check(throws([&] { runner.start(music / "missing", false); }) && throws([&] { runner.start(fs::path("relative"), false); }), "invalid folders are rejected");
+    fs::create_directories(root / "empty");
+    check(throws([&] { runner.start(root / "empty", false); }), "a folder without audio is rejected");
+    const auto started = runner.start(music, false);
+    check(started["total"] == 3 && started["entries"][0]["filename"] == "a_plain.wav" && started["entries"][2]["filename"] == "c_bad.flac", "non-recursive run lists only audio files, sorted");
+    check(throws([&] { runner.start(music, true); }), "only one run at a time");
+    const auto wait_run = [&](const std::string& id) {
+        for (int i = 0; i < 1500; ++i) { auto r = runner.get(id); if (r["status"] != "queued" && r["status"] != "running") return r; std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
+        throw std::runtime_error("validation run timed out");
+    };
+    const auto id = started["id"].get<std::string>();
+    auto finished = wait_run(id);
+    check(finished["status"] == "completed" && finished["done"] == 3 && finished["provider"]["id"] == "fake-mir", "run completes");
+    const auto& e = finished["entries"];
+    check(e[0]["status"] == "done" && e[0]["detectedBpm"] == 128.0 && e[0]["detectedKey"] == "F minor" && e[0]["camelot"] == "4A" && e[0]["sections"].size() == 6 && e[0]["analysisDurationMs"].is_number() &&
+          e[0]["durationMs"] == 155000.0 && e[0]["smartCue"].size() >= 1, "entries carry detected values, sections, timing and Smart Cue proposals");
+    check(e[1]["detectedBpm"] == 64.0 && e[2]["status"] == "failed" && e[2]["error"].get<std::string>().find("cannot decode") != std::string::npos, "one failing file does not stop the run");
+    check(created == 1, "the provider is created on demand");
+
+    // Operator expectations drive the metrics.
+    check(throws([&] { runner.update_entry(id, 0, {{"expectedBpm", 5}}); }) && throws([&] { runner.update_entry(id, 0, {{"expectedKey", "H minor"}}); }) &&
+          throws([&] { runner.update_entry(id, 0, {{"smartCueRating", "Perfect"}}); }) && throws([&] { runner.update_entry(id, 99, {{"notes", "x"}}); }) &&
+          throws([&] { runner.update_entry(id, 0, {{"notes", std::string(501, 'x')}}); }), "expectation edits are validated");
+    runner.update_entry(id, 0, {{"expectedBpm", 128.0}, {"expectedKey", "Fm"}, {"notes", "clean intro"}, {"smartCueRating", "Good"}});
+    const auto updated = runner.update_entry(id, 1, {{"expectedBpm", 128.0}, {"expectedKey", "8A"}, {"smartCueRating", "Bad"}});
+    check(updated["entry"]["expectedKeyNormalized"] == "A minor" && updated["metrics"]["bpmSamples"] == 2, "edited entry reports normalised key and fresh metrics");
+    auto after = runner.get(id)["metrics"];
+    check(std::abs(after["exactBpmAccuracy"].get<double>() - 0.5) < 1e-9 && std::abs(after["octaveEquivalentBpmAccuracy"].get<double>() - 1.0) < 1e-9 &&
+          std::abs(after["keyAccuracy"].get<double>() - 0.5) < 1e-9 && after["failures"] == 1 && after["smartCue"]["good"] == 1, "run metrics follow the operator's expectations");
+    runner.update_entry(id, 0, {{"expectedBpm", nullptr}});
+    check(runner.get(id)["entries"][0]["expectedBpm"].is_null(), "an expectation can be cleared");
+
+    // Exports.
+    const auto exported = json::parse(runner.export_json(id));
+    check(exported["entries"].size() == 3 && exported.contains("metrics"), "JSON export contains entries and metrics");
+    const auto csv = runner.export_csv(id);
+    check(csv.starts_with("filename,duration,detectedBpm,bpmConfidence,alternatives,detectedKey,keyConfidence,camelot,energy,sections,analysisDurationMs,errors,expectedBpm,expectedKey,notes,smartCueRating,smartCueSuggestions\n") &&
+          csv.find("a_plain.wav,155,128,") != std::string::npos && csv.find("clean intro") != std::string::npos && csv.find("cannot decode c_bad.flac") != std::string::npos &&
+          std::count(csv.begin(), csv.end(), '\n') == 4, "CSV export has the requested columns and one row per file");
+    runner.update_entry(id, 2, {{"notes", "=HYPERLINK(\"x\"),\"quoted\""}});
+    const auto safe = runner.export_csv(id);
+    check(safe.find("\"'=HYPERLINK(\"\"x\"\"),\"\"quoted\"\"\"") != std::string::npos, "CSV quoting and spreadsheet-formula neutralisation");
+
+    // Persistence: a new runner on the same directory still lists the run with its edits.
+    { analysis::MusicValidationRunner reloaded(root / "validation", [] { return std::shared_ptr<analysis::MusicalAnalysisProvider>(); });
+      check(reloaded.get(id)["entries"][1]["expectedKey"] == "8A" && reloaded.list().size() == 1, "runs and operator edits survive restart"); }
+
+    // Cancellation and recursion on a second run.
+    write(music / "e_slow.wav", "eeee");
+    const auto second = runner.start(music, true);
+    check(second["total"] == 5, "recursive run includes sub-folders");
+    const auto second_id = second["id"].get<std::string>();
+    for (int i = 0; i < 400; ++i) { const auto r = runner.get(second_id); if (r["entries"][3]["status"] == "pending" && r["done"].get<int>() >= 2 && provider && !provider->cancelled) std::this_thread::sleep_for(std::chrono::milliseconds(5)); else break; }
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    check(runner.cancel(second_id), "a running validation can be cancelled");
+    const auto cancelled = wait_run(second_id);
+    check(cancelled["status"] == "cancelled" && cancelled["entries"][3]["status"] == "pending", "cancelled run keeps finished entries and leaves the rest pending");
+    check(!runner.cancel("run_unknown") && throws([&] { runner.get("../etc/passwd"); }), "unknown run IDs are rejected");
+
+    // A provider that cannot be created fails the run cleanly.
+    analysis::MusicValidationRunner broken(root / "validation-broken", []() -> std::shared_ptr<analysis::MusicalAnalysisProvider> { throw std::runtime_error("python missing"); });
+    const auto bad = broken.start(music, false);
+    for (int i = 0; i < 400 && broken.get(bad["id"].get<std::string>())["status"] == "queued"; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    for (int i = 0; i < 400 && broken.get(bad["id"].get<std::string>())["status"] == "running"; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    const auto failed_run = broken.get(bad["id"].get<std::string>());
+    check(failed_run["status"] == "failed" && failed_run["error"].get<std::string>().find("python missing") != std::string::npos, "missing provider fails the run with a clear reason");
+}
 } // namespace
 
 int main() {
@@ -331,6 +552,8 @@ int main() {
         validation_tests();
         store_tests(root);
         cue_tests();
+        corrections_tests(root);
+        runner_validation_tests(root);
         scheduler_tests(root);
     } catch (const std::exception& error) {
         std::printf("FAIL unexpected exception: %s\n", error.what()); ++failures;

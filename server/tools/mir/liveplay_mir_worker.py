@@ -28,6 +28,13 @@ import os
 import shutil
 import subprocess
 import sys
+import time
+
+# JIT cache: numba recompiles librosa's kernels on every cold process (tens of seconds) unless it can
+# persist them. The install directory may be read-only, so default to a per-user writable folder.
+if not os.environ.get("NUMBA_CACHE_DIR"):
+    _base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), ".cache")
+    os.environ["NUMBA_CACHE_DIR"] = os.path.join(_base, "LivePlay", "numba-cache")
 
 # One CPU thread: the worker runs beside live playback and must not compete for cores.
 for _name in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMBA_NUM_THREADS"):
@@ -406,10 +413,32 @@ def analyze_structure(y, sr: int, duration_s: float, beats_ms, energy: dict) -> 
 
 
 def analyze(path: str, content_hash: str) -> dict:
+    timings: dict = {}
+    begin = time.perf_counter()
+    import librosa  # noqa: F401  (timed: this is most of a cold start)
+    import numpy  # noqa: F401
+    timings["importMs"] = (time.perf_counter() - begin) * 1000
+    mark = time.perf_counter()
+    y = decode(path)
+    timings["decodeMs"] = (time.perf_counter() - mark) * 1000
+    result = analyze_signal(y, content_hash, timings)
+    timings["totalMs"] = (time.perf_counter() - begin) * 1000
+    result["timingsMs"] = {k: rnd(v, 1) for k, v in timings.items()}
+    return result
+
+
+def analyze_signal(y, content_hash: str, timings: dict | None = None) -> dict:
     import librosa
     import numpy as np
 
-    y = decode(path)
+    timings = timings if timings is not None else {}
+
+    def stage(name, fn):
+        mark = time.perf_counter()
+        value = fn()
+        timings[name] = (time.perf_counter() - mark) * 1000
+        return value
+
     sr = ANALYSIS_SR
     duration_s = len(y) / sr
     warnings = []
@@ -430,17 +459,32 @@ def analyze(path: str, content_hash: str) -> dict:
                        "keyConfidence": None, "camelot": None, "energy": 0.0 if len(y) else None,
                        "energyConfidence": 0.9 if len(y) else None, "energyCurve": None, "sections": []})
         return result
-    onset_env = librosa.onset.onset_strength(y=y, sr=sr, hop_length=HOP)
-    rhythm = analyze_rhythm(y, sr, onset_env, duration_s)
+    onset_env = stage("onsetMs", lambda: librosa.onset.onset_strength(y=y, sr=sr, hop_length=HOP))
+    rhythm = stage("rhythmMs", lambda: analyze_rhythm(y, sr, onset_env, duration_s))
     if duration_s < MIN_SECONDS_FOR_RHYTHM:
         warnings.append("track too short for reliable rhythm analysis")
     elif rhythm["bpm"] is None:
         warnings.append("no rhythmic pulse found")
-    key = analyze_key(y, sr)
-    energy = analyze_energy(y, sr, onset_env, duration_s)
-    sections = analyze_structure(y, sr, duration_s, rhythm["beatsMs"], energy)
+    key = stage("keyMs", lambda: analyze_key(y, sr))
+    energy = stage("energyMs", lambda: analyze_energy(y, sr, onset_env, duration_s))
+    sections = stage("structureMs", lambda: analyze_structure(y, sr, duration_s, rhythm["beatsMs"], energy))
     result.update(rhythm); result.update(key); result.update(energy); result["sections"] = sections
     return result
+
+
+def warmup() -> dict:
+    """Runs a short synthetic analysis so numba compiles/loads every kernel before the first real track."""
+    import numpy as np
+
+    begin = time.perf_counter()
+    rng = np.random.default_rng(0)
+    seconds = 24
+    y = (rng.standard_normal(ANALYSIS_SR * seconds) * 0.02).astype("float32")
+    for beat in range(0, seconds * 2):
+        i = int(beat * 0.5 * ANALYSIS_SR)
+        y[i:i + 300] += np.sin(np.linspace(0, 80, 300)).astype("float32") * 0.8
+    analyze_signal(y, "sha256:" + "0" * 64, {})
+    return {"warmupMs": rnd((time.perf_counter() - begin) * 1000, 1)}
 
 
 def respond(request_id: str, **payload) -> None:
@@ -460,6 +504,15 @@ def handle(request: dict) -> int | None:
                     capabilities=CAPABILITIES)
         else:
             respond(request_id, type="health", status="error", error=reason)
+        return None
+    if kind == "warmup":
+        try:
+            ok, reason = dependencies_available()
+            if not ok:
+                raise RuntimeError(reason)
+            respond(request_id, type="warmup", status="ok", **warmup())
+        except Exception as exc:
+            respond(request_id, type="warmup", status="error", error=str(exc)[:500])
         return None
     if kind != "analyze":
         return 5

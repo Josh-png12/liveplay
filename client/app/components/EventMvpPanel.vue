@@ -13,8 +13,8 @@
         <template v-if="selectedTrack">
           <h2>{{ selectedTrack.title }}</h2><p>{{ selectedTrack.artist }} · {{ selectedTrack.album }}</p>
           <div class="waveform-wrap"><canvas ref="waveformCanvas" width="900" height="180" @click="seekWaveform" /><span v-if="waveformStatus !== 'ready'" class="waveform-status">{{ waveformStatus }}</span></div>
-          <div class="wave-controls"><label>IN <input v-model.number="startMs" type="number" min="0" :max="durationMs"></label><label>OUT <input v-model.number="endMs" type="number" min="0" :max="durationMs"></label><label>{{ t('eventMvp.zoom') }} <input v-model.number="zoom" type="range" min="1" max="10"></label></div>
-          <MusicalInsights :track="selectedTrack" :musical="musical" show-suggestions show-overlays @overlay="onMusicalOverlay" @preview="previewSuggestion" @apply="applySuggestion" />
+          <div class="wave-controls"><label>IN <input v-model.number="startMs" type="number" min="0" :max="durationMs"></label><label>OUT <input v-model.number="endMs" type="number" min="0" :max="durationMs"></label><label>{{ t('eventMvp.zoom') }} <input v-model.number="zoom" type="range" min="1" max="10"></label><label v-if="zoom > 1">{{ t('musical.scroll') }} <input v-model.number="scrollPct" type="range" min="0" max="100" step="0.1"></label></div>
+          <MusicalInsights :track="selectedTrack" :musical="musical" :cursor-ms="cursorMs" show-suggestions show-overlays @overlay="onMusicalOverlay" @preview="previewSuggestion" @apply="applySuggestion" />
           <div class="editor-actions"><button @click="ensureCue">{{ cueForTrack ? t('eventMvp.preview') : t('eventMvp.createCue') }}</button><button v-if="selectedTrack.media?.has_video" @click="previewVideo">🎬 {{ t('eventMvp.preview') }}</button><button :disabled="!cueForTrack" @click="playSelected">{{ t('eventMvp.play') }}</button><button :disabled="!cueForTrack" @click="stopSelected">{{ t('eventMvp.stop') }}</button></div>
           <div class="presets"><span>{{ t('eventMvp.presets') }}</span><button v-for="preset in presets" :key="preset.id" :disabled="!cueForTrack" @click="applyPreset(preset.id)">{{ preset.label }}</button></div>
           <div class="tags"><h3>{{ t('eventMvp.tags') }}</h3><label>{{ t('eventMvp.energy') }} <input v-model.number="tagEnergy" type="number" min="0" max="5"></label><label>{{ t('eventMvp.role') }} <input v-model="tagRole"></label><label><input v-model="tagApproved" type="checkbox"> {{ t('eventMvp.approved') }}</label><button @click="saveTags">{{ t('eventMvp.saveTags') }}</button></div>
@@ -39,6 +39,7 @@ import type { AudioItem, GroupItem } from '~/types/project';
 import { DEFAULT_AUDIO_ITEM, DEFAULT_GROUP_ITEM } from '~/types/project';
 import type { PlusTrack } from '~/types/plus';
 import { drawMusicalOverlays } from '~/utils/musical';
+import { bucketRangeForColumn, canvasXToTimeMs, makeView, overlayView, timeMsToCanvasX, viewSpanMs } from '~/utils/waveformView';
 import type { CueSuggestion, MusicalAnalysis, OverlayOptions } from '~/utils/musical';
 import { useVideoOutput } from '~/composables/useVideoOutput';
 import { useMasterMeter } from '~/composables/useLiveMeters';
@@ -51,6 +52,12 @@ const { playCue, stopCue, stopAllCues, activeCues, masterGainDb } = useAudioEngi
 const server = useLiveplayServer();
 const video = useVideoOutput();
 const musical = usePlusMusical();
+const scrollPct = ref(0), cursorMs = ref<number | null>(null);   // 0..100 of the scrollable range; only meaningful while zoom > 1
+const waveformView = computed(() => { const canvasWidth = waveformCanvas.value?.width || 900; const base = makeView(durationMs.value, canvasWidth, zoom.value, 0); return makeView(durationMs.value, canvasWidth, zoom.value, (scrollPct.value / 100) * Math.max(0, base.durationMs - viewSpanMs(base))); });
+// File position of the active cue (seconds -> ms), or null when it is not playing.
+const playheadMs = (): number | null => { const item = cueForTrack.value; const view: any = item ? activeCues.value.get(item.uuid) : null; return view && typeof view.currentTime === 'number' ? view.currentTime * 1000 : null; };
+let playheadFrame = 0;
+function schedulePlayheadDraw() { if (playheadFrame) return; playheadFrame = requestAnimationFrame(() => { playheadFrame = 0; drawWaveform(); }); }
 const musicalOverlay = ref<{ analysis: MusicalAnalysis | null; options: OverlayOptions }>({ analysis: null, options: { beats: true, downbeats: true, sections: true } });
 const search = ref(''), selectedTrack = ref<PlusTrack | null>(null), waveform = ref<any>(null), waveformStatus = ref('absent');
 const startMs = ref(0), endMs = ref(0), zoom = ref(1), waveformCanvas = ref<HTMLCanvasElement>();
@@ -79,7 +86,29 @@ async function loadWaveform(track: PlusTrack) {
   try { if (track.format === 'mp4' && !track.media?.audio_proxy_path) { await requestAudioProxy(track.id); let proxy: any; for (let i = 0; i < 160; i++) { await new Promise(resolve => setTimeout(resolve, 250)); proxy = await getAudioProxy(track.id); if (['ready', 'failed'].includes(proxy.status)) break; } if (proxy?.status !== 'ready') { waveformStatus.value = proxy?.error || 'proxy failed'; return; } await refresh(); selectedTrack.value = tracks.value.find(value => value.id === track.id) || track; } let result = await getTrackWaveform(track.id); if (result.status !== 'ready') { await requestTrackWaveform(track.id); waveformStatus.value = 'queued'; for (let i = 0; i < 80 && result.status !== 'ready'; i++) { await new Promise(resolve => setTimeout(resolve, 250)); result = await getTrackWaveform(track.id); } } waveformStatus.value = result.status; waveform.value = result.status === 'ready' ? result : null; await nextTick(); drawWaveform(); }
   catch (e) { waveformStatus.value = String(e); }
 }
-function drawWaveform() { const canvas = waveformCanvas.value, channels = waveform.value?.channels || []; if (!canvas || !channels.length) return; const ctx = canvas.getContext('2d'); if (!ctx) return; ctx.clearRect(0, 0, canvas.width, canvas.height); const peaks = channels[0].peak || []; const step = Math.max(1, Math.floor(peaks.length / (canvas.width * zoom.value))); const mid = canvas.height / 2; ctx.fillStyle = '#59b6e6'; for (let x = 0; x < canvas.width; x++) { const index = Math.min(peaks.length - 1, x * step); const h = Math.max(1, Number(peaks[index] || 0) * mid); ctx.fillRect(x, mid - h, 1, h * 2); } ctx.fillStyle = '#ffbd4a'; if (durationMs.value) { ctx.fillRect(startMs.value / durationMs.value * canvas.width, 0, 2, canvas.height); ctx.fillRect(endMs.value / durationMs.value * canvas.width, 0, 2, canvas.height); } drawMusicalOverlays(ctx, canvas.width, canvas.height, durationMs.value, musicalOverlay.value.analysis, musicalOverlay.value.options); }
+function drawWaveform() {
+  const canvas = waveformCanvas.value, channels = waveform.value?.channels || []; if (!canvas || !channels.length) return;
+  const ctx = canvas.getContext('2d'); if (!ctx) return;
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const view = waveformView.value, peaks: number[] = channels[0].peak || [], mid = canvas.height / 2;
+  // Every pixel column covers a time range; draw the loudest bucket in that range so no peak is skipped.
+  ctx.fillStyle = '#59b6e6';
+  for (let x = 0; x < canvas.width; x++) {
+    const [first, last] = bucketRangeForColumn(view, peaks.length, x); let peak = 0;
+    for (let i = first; i <= last; i++) peak = Math.max(peak, Number(peaks[i] || 0));
+    const h = Math.max(1, peak * mid); ctx.fillRect(x, mid - h, 1, h * 2);
+  }
+  musicalOverlayDraw(ctx, canvas);
+  // IN / OUT and the playhead use the same transform as the peaks and the overlays.
+  if (durationMs.value) {
+    ctx.fillStyle = '#ffbd4a';
+    for (const ms of [startMs.value, endMs.value]) { const x = timeMsToCanvasX(view, ms); if (x >= -2 && x <= canvas.width) ctx.fillRect(x, 0, 2, canvas.height); }
+    const head = playheadMs(); if (head != null) { const x = timeMsToCanvasX(view, head); if (x >= 0 && x <= canvas.width) { ctx.fillStyle = '#ff5a5a'; ctx.fillRect(x, 0, 2, canvas.height); } }
+  }
+}
+function musicalOverlayDraw(ctx: CanvasRenderingContext2D, canvas: HTMLCanvasElement) {
+  drawMusicalOverlays(ctx, canvas.width, canvas.height, durationMs.value, musicalOverlay.value.analysis, musicalOverlay.value.options, 4, overlayView(waveformView.value));
+}
 function onMusicalOverlay(value: { analysis: MusicalAnalysis | null; options: OverlayOptions }) { musicalOverlay.value = value; drawWaveform(); }
 let suggestionPreviewTimer: ReturnType<typeof setTimeout> | undefined;
 // Auditioning never edits the cue: it plays the existing cue from the suggested IN and stops at the suggested OUT.
@@ -102,7 +131,13 @@ async function applySuggestion(suggestion: CueSuggestion) {
   }
   drawWaveform();
 }
-function seekWaveform(event: MouseEvent) { if (!durationMs.value) return; const rect = (event.currentTarget as HTMLCanvasElement).getBoundingClientRect(); const ms = Math.max(0, Math.min(durationMs.value, ((event.clientX - rect.left) / rect.width) * durationMs.value)); if (cueForTrack.value) server.seekItem(cueForTrack.value.uuid, ms / 1000); }
+function seekWaveform(event: MouseEvent) {
+  if (!durationMs.value) return;
+  const canvas = event.currentTarget as HTMLCanvasElement, rect = canvas.getBoundingClientRect();
+  const ms = canvasXToTimeMs(waveformView.value, ((event.clientX - rect.left) / rect.width) * canvas.width);
+  cursorMs.value = ms;   // also the time "Set first beat" uses
+  if (cueForTrack.value) server.seekItem(cueForTrack.value.uuid, ms / 1000);
+}
 async function ensureCue() { if (!cueForTrack.value) await createCue(); else { selectedItem.value = cueForTrack.value; openItemProperties(cueForTrack.value.uuid); } }
 async function createCue() { if (!selectedTrack.value || !currentProject.value) return; const track = selectedTrack.value; if (track.format === 'mp4' && !track.media?.audio_proxy_path) { error.value = 'Audio proxy is not ready'; return; } const gain = eventLoudness.value.enabled && typeof track.prepared_gain_db === 'number' ? track.prepared_gain_db : 0; const uuid = crypto.randomUUID(); const item: AudioItem = { ...DEFAULT_AUDIO_ITEM, uuid, index: [currentProject.value.items.length], displayName: track.title || track.source_name, type: 'audio', volume: Math.pow(10, gain / 20), mediaFileName: track.source_name, mediaPath: `plus/assets/${track.id}`, mediaServerPath: track.format === 'mp4' ? track.media?.audio_proxy_path : track.asset_path, waveformPath: `plus/waveforms/${track.id}.json`, duration: track.duration_ms / 1000, inPoint: startMs.value / 1000, outPoint: endMs.value / 1000, eventCue: { trackId: track.id, startMs: startMs.value, endMs: endMs.value, trackGainDb: gain, transition: { type: 'cut', durationMs: 0, }, media: { sourcePath: track.asset_path, mediaType: track.media?.media_type || 'audio', hasVideo: !!track.media?.has_video, videoTransition: 'cut' } } } as AudioItem; addItem(item); selectedItem.value = item; await saveProject(); openItemProperties(uuid); }
 function applyPreset(id: string) { const item = cueForTrack.value; if (!item) return; const values: Record<string, Partial<AudioItem>> = { 'sports-entry': { playFade: .2, stopFade: 1.2, crossFade: .3, endBehavior: { action: 'nothing' } }, 'sports-exit': { playFade: .2, stopFade: 2, crossFade: 0, endBehavior: { action: 'nothing' } }, background: { volume: .7, playFade: 1, stopFade: 1, crossFade: 1, endBehavior: { action: 'loop' } }, awards: { volume: .85, playFade: 1, stopFade: 3, crossFade: 1, endBehavior: { action: 'nothing' } } }; Object.assign(item, values[id]); item.eventCue = { ...(item.eventCue || {}), preset: id as any, fadeInMs: (item.playFade || 0) * 1000, fadeOutMs: (item.stopFade || 0) * 1000 }; void saveProject(); }
@@ -125,7 +160,7 @@ async function saveLoudnessSettings() { if (!currentProject.value) return; curre
 async function applyOutdoorPreset() { if (!currentProject.value) return; eventLoudness.value = { enabled: true, targetLufs: -12, maxPositiveGainDb: 6, maxNegativeGainDb: -12, truePeakCeilingDbtp: -1 }; currentProject.value.settings.disableLimiter = false; await saveLoudnessSettings(); }
 let videoTimer: ReturnType<typeof setInterval> | undefined;
 watch(activeCues, () => { const item = cueForTrack.value; const view: any = item ? activeCues.value.get(item.uuid) : null; if (view && item?.eventCue?.media?.hasVideo) void video.sync(view.currentTime || item.inPoint); });
-watch([startMs, endMs, zoom], drawWaveform); watch(waveform, drawWaveform); onMounted(() => { const saved = currentProject.value?.settings.eventLoudness; if (saved) eventLoudness.value = { ...eventLoudness.value, ...saved }; const board = currentProject.value?.settings.eventShowBoard; if (board?.teams?.length) { teams.value = board.teams.map((team, index) => ({ id: team.id || `legacy-${index}`, name: team.name, country: team.country, grade: team.grade, entryCueId: team.entryCueId, exitCueId: team.exitCueId })); const selected = teams.value.find(team => team.id === board.selectedTeamId); selectedTeam.value = selected?.name || teams.value[0]?.name || ''; } initialize(); videoTimer = setInterval(() => { const item = cueForTrack.value; const view: any = item ? activeCues.value.get(item.uuid) : null; if (view && item?.eventCue?.media?.hasVideo) void video.sync(view.currentTime || item.inPoint); }, 250); }); onBeforeUnmount(() => { if (videoTimer) clearInterval(videoTimer); clearTimeout(suggestionPreviewTimer); });
+watch([startMs, endMs, zoom, scrollPct], drawWaveform); watch(activeCues, schedulePlayheadDraw); watch(waveform, drawWaveform); onMounted(() => { const saved = currentProject.value?.settings.eventLoudness; if (saved) eventLoudness.value = { ...eventLoudness.value, ...saved }; const board = currentProject.value?.settings.eventShowBoard; if (board?.teams?.length) { teams.value = board.teams.map((team, index) => ({ id: team.id || `legacy-${index}`, name: team.name, country: team.country, grade: team.grade, entryCueId: team.entryCueId, exitCueId: team.exitCueId })); const selected = teams.value.find(team => team.id === board.selectedTeamId); selectedTeam.value = selected?.name || teams.value[0]?.name || ''; } initialize(); videoTimer = setInterval(() => { const item = cueForTrack.value; const view: any = item ? activeCues.value.get(item.uuid) : null; if (view && item?.eventCue?.media?.hasVideo) void video.sync(view.currentTime || item.inPoint); }, 250); }); onBeforeUnmount(() => { if (videoTimer) clearInterval(videoTimer); clearTimeout(suggestionPreviewTimer); });
 </script>
 
 <style scoped>

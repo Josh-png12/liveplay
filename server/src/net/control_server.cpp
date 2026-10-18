@@ -32,6 +32,7 @@
 #include "liveplay/analysis/loudness_policy.hpp"
 #include "liveplay/analysis/worker_adapter.hpp"
 #include "liveplay/analysis/musical.hpp"
+#include "liveplay/analysis/validation_runner.hpp"
 #include "liveplay/library/cue_suggestions.hpp"
 #include "liveplay/util/atomic_json.hpp"
 #include "liveplay/import/import_service.hpp"
@@ -345,7 +346,9 @@ std::unique_ptr<library::AudioProxyService> audio_proxy_service;
     library::RuleBasedCueSuggestionProvider cue_suggestions;
     std::unique_ptr<analysis::JsonTrackAnalysisRepository> analysis_repository;
     std::unique_ptr<analysis::AnalysisScheduler> analysis_scheduler;
+    std::unique_ptr<analysis::MusicValidationRunner> validation_runner;   // independent worker process; imports nothing
     std::atomic<bool> performance_mode{true};
+    std::function<bool()> protect_audio;   // Performance Mode + active playback (same predicate the schedulers use)
     audio::CueId hardware_test_cue;
 
     // Caller holds ws_mutex. UserStore never calls back into the server while
@@ -1000,7 +1003,7 @@ static bool api_token_forbidden(std::string_view path) {
     if (path == "/api/upload")           return true;
     // Library/import responses expose server asset paths; apply the same
     // human-session boundary as media browsing and copying.
-    if (path.starts_with("/api/plus/library") || path.starts_with("/api/plus/imports") || path.starts_with("/api/plus/analysis")) return true;
+    if (path.starts_with("/api/plus/library") || path.starts_with("/api/plus/imports") || path.starts_with("/api/plus/analysis") || path.starts_with("/api/plus/validation")) return true;
     if (path == "/api/file/download")    return true;
     if (path == "/api/copy_to_media")    return true;
     if (path == "/api/project/import")   return true;   // an archive in…
@@ -1134,6 +1137,7 @@ ControlServer::ControlServer(audio::AudioEngine& engine,
         }
         return false;
     };
+    impl_->protect_audio = protect_audio;
     if (!cfg_.plus_library_dir.empty() && cfg_.plus_storage_error.empty()) {
         try {
             impl_->track_repository = std::make_unique<library::JsonTrackRepository>(
@@ -1197,6 +1201,9 @@ ControlServer::ControlServer(audio::AudioEngine& engine,
                     if (const char* value = std::getenv("LIVEPLAY_MIR_TIMEOUT_S"); value && std::atoi(value) > 0) timeout = std::chrono::seconds(std::atoi(value));
                     auto provider = std::make_shared<analysis::ExternalMusicalProvider>(python, options, timeout);
                     impl_->musical_provider = provider; providers.push_back(provider);
+                    // Validation runs get their own worker process so they never contend with library jobs.
+                    impl_->validation_runner = std::make_unique<analysis::MusicValidationRunner>(cfg_.plus_data_dir / "validation",
+                        [python, options, timeout] { return std::make_shared<analysis::ExternalMusicalProvider>(python, options, timeout); }, protect_audio);
                     Logger::info("Musical analysis ready ({}).", provider->provider_version());
                 } catch (const std::exception& e) {
                     impl_->musical_unavailable_reason = e.what();
@@ -2306,6 +2313,8 @@ void ControlServer::install_routes() {
             result[name] = available && caps.value(name, false) == true;
         result["camelot"] = available && caps.value("camelot", false) == true && result["keyDetection"] == true;
         result["sectionTypes"] = available && caps.contains("sectionTypes") ? caps["sectionTypes"] : json::array();
+        result["warmup"] = impl_->musical_provider ? json(std::dynamic_pointer_cast<analysis::ExternalMusicalProvider>(impl_->musical_provider)->warmup_state()) : json(nullptr);
+        result["validationRunner"] = available && impl_->validation_runner != nullptr;
         result["smartCueV1"] = impl_->library_service != nullptr && plus_feature_enabled("LIVEPLAY_PLUS_SMART_CUE", true) &&
             (available || impl_->waveform_service != nullptr);
         result["cueIntents"] = json::array();
@@ -2736,6 +2745,44 @@ void ControlServer::install_routes() {
                 auto response = json_ok(json(job)); response.code = 202; return response;
             } catch (const std::exception& e) { return json_err(400, e.what()); }
         });
+    // Manual corrections never touch the detected analysis; they are stored beside it and surface as `effective`.
+    CROW_ROUTE(app, "/api/plus/analysis/tracks/<string>/musical/corrections").methods(crow::HTTPMethod::Post)
+        ([this](const crow::request& req, const std::string& id) {
+            if (!impl_->musical_store || !impl_->library_service) return json_err(503, "musical analysis storage unavailable");
+            if (req.body.size() > 8192) return json_err(413, "request too large");
+            try {
+                const auto body = json::parse(req.body);
+                if (!impl_->library_service->find(id)) return json_err(404, "track not found");
+                const auto document = impl_->musical_store->find(id);
+                if (!document) return json_err(404, "track has no musical analysis to correct");
+                auto merged = analysis::empty_corrections();
+                if (document->contains("corrections") && (*document)["corrections"].is_object())
+                    for (auto& [name, value] : merged.items()) if ((*document)["corrections"].contains(name)) value = (*document)["corrections"][name];
+                if (body.contains("reset")) {
+                    std::vector<std::string> names;
+                    if (body["reset"].is_string()) names.push_back(body["reset"].get<std::string>());
+                    else for (const auto& n : body.at("reset")) names.push_back(n.get<std::string>());
+                    const auto empty = analysis::empty_corrections();
+                    for (const auto& name : names) {
+                        std::vector<std::string> fields;
+                        if (name == "all") for (const auto& [field, ignored] : empty.items()) fields.push_back(field);
+                        else if (name == "bpm") fields = {"bpm"};
+                        else if (name == "grid") fields = {"firstBeatMs", "gridOffsetMs"};
+                        else if (name == "key") fields = {"key", "scale"};
+                        else return json_err(400, "reset accepts all, bpm, grid or key");
+                        for (const auto& field : fields) merged[field] = empty[field];
+                    }
+                }
+                if (body.contains("set")) {
+                    for (const auto& [name, value] : body.at("set").items()) {
+                        if (!merged.contains(name)) return json_err(400, "unknown correction: " + name);
+                        merged[name] = value;
+                    }
+                }
+                if (body.contains("nudgeGridMs")) merged["gridOffsetMs"] = merged["gridOffsetMs"].get<double>() + body.at("nudgeGridMs").get<double>();
+                return json_ok(json{{"trackId", id}, {"analysis", impl_->musical_store->set_corrections(id, merged)}});
+            } catch (const std::exception& e) { return json_err(400, e.what()); }
+        });
     CROW_ROUTE(app, "/api/plus/analysis/musical").methods(crow::HTTPMethod::Post)
         ([this, musical_ready, analysis_input](const crow::request& req) {
             if (!musical_ready()) return json_err(503, "musical analysis is not available: " + impl_->musical_unavailable_reason);
@@ -2768,6 +2815,16 @@ void ControlServer::install_routes() {
                 auto response = json_ok(json{{"queued", queued}, {"skipped", skipped}, {"unavailable", unavailable}, {"considered", candidates.size()}});
                 response.code = 202; return response;
             } catch (const std::exception& e) { return json_err(400, e.what()); }
+        });
+    // Optional, explicit and low priority: the Library calls it when the operator opens the music tools, so the
+    // first analysis does not pay the cold start. Skipped while playback is being protected.
+    CROW_ROUTE(app, "/api/plus/analysis/musical/warmup").methods(crow::HTTPMethod::Post)
+        ([this] {
+            const auto provider = std::dynamic_pointer_cast<analysis::ExternalMusicalProvider>(impl_->musical_provider);
+            if (!provider) return json_err(503, "musical analysis is not available");
+            const bool started = provider->warm_up_async([this] { return impl_->protect_audio && impl_->protect_audio(); });
+            auto response = json_ok(json{{"started", started}, {"state", provider->warmup_state()}, {"last", provider->last_warmup()}});
+            response.code = started ? 202 : 200; return response;
         });
     CROW_ROUTE(app, "/api/plus/analysis/musical/summaries").methods(crow::HTTPMethod::Get)
         ([this, musical_progress] {
@@ -2802,7 +2859,7 @@ void ControlServer::install_routes() {
                 std::string analysis_state = "absent";
                 if (impl_->musical_store) {
                     analysis_state = impl_->musical_store->state(id, track->content_hash);
-                    if (analysis_state == "ready") if (const auto document = impl_->musical_store->find(id)) input.musical = *document;
+                    if (analysis_state == "ready") if (const auto document = impl_->musical_store->find(id)) input.musical = analysis::consumer_view(*document);  // effective (corrected) values
                 }
                 if (impl_->waveform_service) {
                     const auto wave = impl_->waveform_service->status(*track);
@@ -2823,6 +2880,62 @@ void ControlServer::install_routes() {
                 body["autoApply"] = false;  // suggestions are only ever proposals
                 return json_ok(body);
             } catch (const std::exception& e) { return json_err(400, e.what()); }
+        });
+
+    // ---- Phase 2.5: real-music validation (analyse a folder, record expectations, export) ----
+    // The folder is read in place and nothing is imported. Folder access follows the same fs-root jail as /api/fs.
+    CROW_ROUTE(app, "/api/plus/validation/runs").methods(crow::HTTPMethod::Post)
+        ([this](const crow::request& req) {
+            if (!impl_->validation_runner) return json_err(503, "validation needs the musical analysis worker: " + impl_->musical_unavailable_reason);
+            if (req.body.size() > 8192) return json_err(413, "request too large");
+            try {
+                const auto body = json::parse(req.body);
+                const auto folder = util::utf8_to_path(body.at("folder").get<std::string>());
+                if (!path_within_fs_roots(folder)) return json_fs_denied();
+                auto response = json_ok(impl_->validation_runner->start(folder, body.value("recursive", false)));
+                response.code = 202; return response;
+            } catch (const std::length_error& e) { return json_err(413, e.what()); }
+            catch (const std::runtime_error& e) { return json_err(409, e.what()); }
+            catch (const std::exception& e) { return json_err(400, e.what()); }
+        });
+    CROW_ROUTE(app, "/api/plus/validation/runs").methods(crow::HTTPMethod::Get)
+        ([this] {
+            if (!impl_->validation_runner) return json_ok(json{{"runs", json::array()}, {"available", false}});
+            return json_ok(json{{"runs", impl_->validation_runner->list()}, {"available", true}});
+        });
+    CROW_ROUTE(app, "/api/plus/validation/runs/<string>").methods(crow::HTTPMethod::Get)
+        ([this](const std::string& id) {
+            if (!impl_->validation_runner) return json_err(503, "validation unavailable");
+            try { return json_ok(impl_->validation_runner->get(id)); } catch (const std::out_of_range& e) { return json_err(404, e.what()); }
+        });
+    CROW_ROUTE(app, "/api/plus/validation/runs/<string>/cancel").methods(crow::HTTPMethod::Post)
+        ([this](const std::string& id) {
+            if (!impl_->validation_runner) return json_err(503, "validation unavailable");
+            return impl_->validation_runner->cancel(id) ? json_ok(json{{"cancelled", true}}) : json_err(404, "no active run with that id");
+        });
+    CROW_ROUTE(app, "/api/plus/validation/runs/<string>/entries/<int>").methods(crow::HTTPMethod::Post)
+        ([this](const crow::request& req, const std::string& id, int index) {
+            if (!impl_->validation_runner) return json_err(503, "validation unavailable");
+            if (req.body.size() > 8192 || index < 0) return json_err(400, "invalid request");
+            try { return json_ok(impl_->validation_runner->update_entry(id, static_cast<std::size_t>(index), json::parse(req.body))); }
+            catch (const std::out_of_range& e) { return json_err(404, e.what()); }
+            catch (const std::exception& e) { return json_err(400, e.what()); }
+        });
+    CROW_ROUTE(app, "/api/plus/validation/runs/<string>/export").methods(crow::HTTPMethod::Get)
+        ([this](const crow::request& req, const std::string& id) {
+            if (!impl_->validation_runner) return json_err(503, "validation unavailable");
+            const char* format = req.url_params.get("format");
+            const std::string kind = format ? format : "json";
+            try {
+                if (kind != "json" && kind != "csv") return json_err(400, "format must be json or csv");
+                const auto content = kind == "csv" ? impl_->validation_runner->export_csv(id) : impl_->validation_runner->export_json(id);
+                // ?wrap=1 returns the file as JSON so the renderer can save it through its normal authenticated client.
+                if (req.url_params.get("wrap")) return json_ok(json{{"filename", id + "." + kind}, {"mime", kind == "csv" ? "text/csv" : "application/json"}, {"content", content}});
+                crow::response response(200, content);
+                response.set_header("Content-Type", kind == "csv" ? "text/csv; charset=utf-8" : "application/json; charset=utf-8");
+                response.set_header("Content-Disposition", "attachment; filename=\"" + id + "." + kind + "\"");
+                return response;
+            } catch (const std::out_of_range& e) { return json_err(404, e.what()); }
         });
     // Event Loudness never changes source files. It turns a completed, cached
     // analysis into an operator-approved metadata gain, bounded by both the
