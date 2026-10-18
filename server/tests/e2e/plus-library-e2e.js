@@ -45,7 +45,7 @@ async function api(route, body, options = {}) {
 }
 async function start() {
   proc = spawn(serverExe, ['--bind', '127.0.0.1', '--port', String(port),
-    '--fs-root', inputs, '--max-upload-mb', '1'], { cwd: root, env: { ...process.env, LIVEPLAY_PLUS_DATA_DIR: path.join(root, 'plus') }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+    '--fs-root', inputs, '--max-upload-mb', '1'], { cwd: root, env: { ...process.env, LIVEPLAY_PLUS_DATA_DIR: path.join(root, 'plus'), LIVEPLAY_PLUS_MUSICAL_ANALYSIS: '0' }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   proc.stdout.on('data', data => { log += data; });
   proc.stderr.on('data', data => { log += data; });
   for (let i = 0; i < 100; i++) {

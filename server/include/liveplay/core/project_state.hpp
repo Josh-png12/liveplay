@@ -741,6 +741,9 @@ public:
     std::string current_preview_item_uuid() const;
     // Engine cue ID for the active preview, or an empty CueId if none.
     audio::CueId current_preview_cue_id() const;
+    // Route a short diagnostic cue to the existing preview bus without
+    // changing project playback or the main device.
+    bool route_diagnostic_cue_to_preview(const audio::CueId& cue);
 
     // Route every LTC-enabled cue's synthetic LTC source channel to whatever
     // this machine binds settings.ltcOutput to. Safe to call at any time

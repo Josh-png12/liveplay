@@ -31,6 +31,8 @@
 #include "liveplay/analysis/analysis.hpp"
 #include "liveplay/analysis/loudness_policy.hpp"
 #include "liveplay/analysis/worker_adapter.hpp"
+#include "liveplay/analysis/musical.hpp"
+#include "liveplay/library/cue_suggestions.hpp"
 #include "liveplay/util/atomic_json.hpp"
 #include "liveplay/import/import_service.hpp"
 
@@ -85,6 +87,52 @@ static bool plus_feature_enabled(const char* name, bool fallback) {
     if (!value) return fallback;
     const std::string v(value);
     return !(v == "0" || v == "false" || v == "off" || v == "no");
+}
+
+// Finds the optional MIR worker: the script (tools/mir/liveplay_mir_worker.py) and a
+// Python interpreter that has librosa. Nothing here is required to start LivePlay.
+static std::pair<fs::path, fs::path> locate_mir_worker() {
+    std::error_code ec;
+    fs::path script;
+    if (const char* configured = std::getenv("LIVEPLAY_MIR_WORKER"); configured && *configured) script = util::utf8_to_path(configured);
+    else {
+        const auto cwd = fs::current_path(ec);
+        for (const auto& candidate : {cwd / "mir", cwd / "tools" / "mir", cwd.parent_path() / "tools" / "mir",
+                                      cwd.parent_path().parent_path() / "tools" / "mir"}) {
+            if (fs::is_regular_file(candidate / "liveplay_mir_worker.py", ec)) { script = candidate / "liveplay_mir_worker.py"; break; }
+        }
+    }
+    if (script.empty() || !fs::is_regular_file(script, ec)) throw std::runtime_error("MIR worker script not found (set LIVEPLAY_MIR_WORKER)");
+    fs::path python;
+    if (const char* configured = std::getenv("LIVEPLAY_MIR_PYTHON"); configured && *configured) python = util::utf8_to_path(configured);
+    else {
+        const auto dir = script.parent_path();
+#if defined(_WIN32)
+        const std::vector<fs::path> candidates{dir / ".venv" / "Scripts" / "python.exe", dir / "python" / "python.exe"};
+#else
+        const std::vector<fs::path> candidates{dir / ".venv" / "bin" / "python3", dir / ".venv" / "bin" / "python"};
+#endif
+        for (const auto& candidate : candidates) if (fs::is_regular_file(candidate, ec)) { python = candidate; break; }
+        if (python.empty()) {
+            if (const char* path_env = std::getenv("PATH")) {
+                const std::string paths = path_env;
+#if defined(_WIN32)
+                const char separator = ';'; const char* names[] = {"python.exe"};
+#else
+                const char separator = ':'; const char* names[] = {"python3", "python"};
+#endif
+                std::size_t begin = 0;
+                while (begin <= paths.size() && python.empty()) {
+                    auto end = paths.find(separator, begin); if (end == std::string::npos) end = paths.size();
+                    const auto directory = paths.substr(begin, end - begin); begin = end + 1;
+                    if (directory.empty() || directory.find("WindowsApps") != std::string::npos) continue;  // Store stub
+                    for (const auto* name : names) if (fs::is_regular_file(util::utf8_to_path(directory) / name, ec)) { python = util::utf8_to_path(directory) / name; break; }
+                }
+            }
+        }
+    }
+    if (python.empty()) throw std::runtime_error("no Python interpreter found for the MIR worker (set LIVEPLAY_MIR_PYTHON)");
+    return {python, script};
 }
 
 // A small, explicitly requested test signal for the hardware panel. It is
@@ -290,6 +338,11 @@ struct ControlServer::Impl {
     std::unique_ptr<library::LibraryMaintenance> library_maintenance;
 std::unique_ptr<library::WaveformService> waveform_service;
 std::unique_ptr<library::AudioProxyService> audio_proxy_service;
+    // The store and provider outlive the scheduler (its sink writes into the store).
+    std::unique_ptr<analysis::MusicalAnalysisStore> musical_store;
+    std::shared_ptr<analysis::MusicalAnalysisProvider> musical_provider;
+    std::string musical_unavailable_reason = "not configured";
+    library::RuleBasedCueSuggestionProvider cue_suggestions;
     std::unique_ptr<analysis::JsonTrackAnalysisRepository> analysis_repository;
     std::unique_ptr<analysis::AnalysisScheduler> analysis_scheduler;
     std::atomic<bool> performance_mode{true};
@@ -1129,8 +1182,34 @@ ControlServer::ControlServer(audio::AudioEngine& engine,
                 try { if (provider->health_check()) providers.push_back(std::move(provider)); }
                 catch (const std::exception& e) { Logger::warn("FFmpeg basic analysis unavailable: {}", e.what()); }
             }
+            // Musical analysis is optional and degradable: any failure here only turns its capabilities off.
+            try { impl_->musical_store = std::make_unique<analysis::MusicalAnalysisStore>(cfg_.plus_data_dir / "analysis" / "musical"); }
+            catch (const std::exception& e) { impl_->musical_unavailable_reason = std::string("musical store: ") + e.what(); Logger::warn("Musical analysis store unavailable: {}", e.what()); }
+            if (impl_->musical_store) {
+                try {
+                    if (!plus_feature_enabled("LIVEPLAY_PLUS_MUSICAL_ANALYSIS", true)) throw std::runtime_error("disabled by LIVEPLAY_PLUS_MUSICAL_ANALYSIS");
+                    const auto [python, script] = locate_mir_worker();
+                    analysis::ExternalWorkerOptions options;
+                    options.arguments = {util::path_to_utf8(script)};
+                    options.low_priority = true;   // the OS scheduler favours the audio thread and the UI
+                    options.persistent = true;     // importing the scientific stack costs seconds per process
+                    std::chrono::seconds timeout(240);
+                    if (const char* value = std::getenv("LIVEPLAY_MIR_TIMEOUT_S"); value && std::atoi(value) > 0) timeout = std::chrono::seconds(std::atoi(value));
+                    auto provider = std::make_shared<analysis::ExternalMusicalProvider>(python, options, timeout);
+                    impl_->musical_provider = provider; providers.push_back(provider);
+                    Logger::info("Musical analysis ready ({}).", provider->provider_version());
+                } catch (const std::exception& e) {
+                    impl_->musical_unavailable_reason = e.what();
+                    Logger::warn("Musical analysis unavailable: {}", e.what());
+                }
+            }
             impl_->analysis_scheduler = std::make_unique<analysis::AnalysisScheduler>(
                 *impl_->analysis_repository, cfg_.plus_data_dir / "analysis", std::move(providers), protect_audio);
+            if (impl_->musical_provider && impl_->musical_store) {
+                auto* store = impl_->musical_store.get();
+                impl_->analysis_scheduler->set_sink(impl_->musical_provider->id(), analysis::ProviderSink{
+                    [store](const analysis::AnalysisJob& job, json& result) { store->save(job.track_id, result.at("musical")); }, nullptr});
+            }
         } catch (const std::exception& e) { Logger::error("Plus analysis unavailable: {}", e.what()); }
     }
 }
@@ -2215,8 +2294,26 @@ void ControlServer::install_routes() {
     // them to a rule, so the CORS headers are added in AuthGuard::after_handle.
 
     // ---- LivePlay+: independent library and background ingestion ----
+    // Capabilities mirror what the installed provider really reports; nothing is claimed otherwise.
+    const auto musical_capabilities_json = [this] {
+        const bool available = impl_->musical_provider != nullptr && impl_->musical_store != nullptr && impl_->analysis_scheduler != nullptr;
+        json caps = available ? impl_->musical_provider->musical_capabilities() : analysis::unavailable_musical_capabilities();
+        json result = {{"available", available}, {"schemaVersion", analysis::musical_schema_version},
+                       {"provider", available ? json(impl_->musical_provider->id()) : json(nullptr)},
+                       {"providerVersion", available ? json(impl_->musical_provider->provider_version()) : json(nullptr)},
+                       {"unavailableReason", available ? json(nullptr) : json(impl_->musical_unavailable_reason)}};
+        for (const auto& name : {"bpm", "beats", "beatgrid", "downbeats", "keyDetection", "energyAnalysis", "structureAnalysis"})
+            result[name] = available && caps.value(name, false) == true;
+        result["camelot"] = available && caps.value("camelot", false) == true && result["keyDetection"] == true;
+        result["sectionTypes"] = available && caps.contains("sectionTypes") ? caps["sectionTypes"] : json::array();
+        result["smartCueV1"] = impl_->library_service != nullptr && plus_feature_enabled("LIVEPLAY_PLUS_SMART_CUE", true) &&
+            (available || impl_->waveform_service != nullptr);
+        result["cueIntents"] = json::array();
+        for (const auto& intent : impl_->cue_suggestions.intents()) result["cueIntents"].push_back({{"id", intent.id}, {"label", intent.label}, {"description", intent.description}});
+        return result;
+    };
     CROW_ROUTE(app, "/api/plus/capabilities").methods(crow::HTTPMethod::Get)
-        ([this] {
+        ([this, musical_capabilities_json] {
             return json_ok(json{{"schemaVersion", 1},
                 {"library", impl_->library_service != nullptr},
                 {"imports", impl_->import_service != nullptr},
@@ -2224,6 +2321,7 @@ void ControlServer::install_routes() {
                     : json{{"basic", false}, {"loudness", false}, {"rhythm", false}, {"tonality", false}, {"structure", false}, {"semantic", false}, {"stems", false}}},
                 {"analysisAvailable", impl_->analysis_scheduler && impl_->analysis_scheduler->available()}, {"storageError", cfg_.plus_storage_error},
                 {"performanceMode", impl_->performance_mode.load(std::memory_order_relaxed)},
+                {"musicalAnalysis", musical_capabilities_json()},
                 {"outputLimiterAvailable", true},
                 {"plus", json{
                     {"eventMvp", impl_->library_service != nullptr && plus_feature_enabled("LIVEPLAY_PLUS_EVENT_MVP", true)},
@@ -2271,7 +2369,14 @@ void ControlServer::install_routes() {
             const auto stats = engine_.stats(false); const auto& config = engine_.config();
             const auto master = engine_.read_master_meter(0);
             json devices = json::array(); for (const auto& d : stats.device_stats) devices.push_back(json{{"name", d.name}, {"clock", d.is_clock}});
+            const auto output_map = outputs_.to_json();
+            const auto mapped_output = [&output_map](const char* name) {
+                for (const auto& entry : output_map.value("outputs", json::array()))
+                    if (entry.value("name", "") == name) return entry.value("channels", json::array());
+                return json::array();
+            };
             return json_ok(json{{"audioOutputDevice", devices.empty() ? "" : devices.front().value("name", "")},
+                {"mainOutput", mapped_output("Main Out")}, {"previewOutput", mapped_output("Preview Out")},
                 {"sampleRate", config.mix_sample_rate}, {"bufferSize", stats.device_period_frames},
                 {"callbackStatus", stats.underruns == 0 ? "healthy" : "underrun_detected"}, {"audioUnderruns", stats.underruns},
                 {"callbackOverruns", stats.render_block_us_max > stats.block_budget_us ? 1 : 0},
@@ -2285,12 +2390,18 @@ void ControlServer::install_routes() {
             try {
                 const auto body = req.body.empty() ? json::object() : json::parse(req.body);
                 const auto channel = body.value("channel", "stereo");
+                const auto output = body.value("output", "main");
                 if (channel != "stereo" && channel != "left" && channel != "right") return json_err(400, "channel must be stereo, left or right");
+                if (output != "main" && output != "preview") return json_err(400, "output must be main or preview");
                 if (!impl_->hardware_test_cue.empty()) engine_.unload_cue(impl_->hardware_test_cue);
                 const auto file = write_hardware_test_tone(cfg_.plus_data_dir / "cache" / "hardware-test", channel, engine_.config().mix_sample_rate);
-                impl_->hardware_test_cue = engine_.load_cue(file);
+                impl_->hardware_test_cue = output == "preview" ? engine_.load_cue_no_route(file) : engine_.load_cue(file);
+                if (output == "preview" && !state_.route_diagnostic_cue_to_preview(impl_->hardware_test_cue)) {
+                    engine_.unload_cue(impl_->hardware_test_cue); impl_->hardware_test_cue = {};
+                    return json_err(409, "Preview / PFL Output is unavailable");
+                }
                 engine_.play(impl_->hardware_test_cue);
-                return json_ok(json{{"playing", true}, {"channel", channel}});
+                return json_ok(json{{"playing", true}, {"channel", channel}, {"output", output}});
             } catch (const std::exception& e) { return json_err(500, e.what()); }
         });
     CROW_ROUTE(app, "/api/plus/hardware/test-audio/stop").methods(crow::HTTPMethod::Post)
@@ -2563,6 +2674,154 @@ void ControlServer::install_routes() {
             try {
                 const auto record = impl_->analysis_repository->find(id);
                 return record ? json_ok(*record) : json_err(404, "analysis absent");
+            } catch (const std::exception& e) { return json_err(400, e.what()); }
+        });
+
+    // ---- Phase 2: musical analysis (BPM / beats / key / energy / structure) and Smart Cue ----
+    // Every route below is an explicit operator action. Nothing here is started automatically on
+    // import, and no route touches the audio engine.
+    const auto analysis_input = [](const library::Track& track) {
+        if (!track.media.audio_proxy_path.empty() && fs::is_regular_file(util::utf8_to_path(track.media.audio_proxy_path))) return track.media.audio_proxy_path;
+        return track.asset_path;
+    };
+    const auto musical_ready = [this] {
+        return impl_->musical_provider && impl_->musical_store && impl_->analysis_scheduler && impl_->library_service;
+    };
+    // Queue progress for the provider; the UI uses it for "Analyzing 3 of 40".
+    const auto musical_progress = [this] {
+        json counts = {{"pending", 0}, {"running", 0}, {"completed", 0}, {"failed", 0}, {"cancelled", 0}};
+        json active = json::object();
+        if (!impl_->analysis_scheduler || !impl_->musical_provider) return json{{"counts", counts}, {"jobs", active}};
+        for (const auto& job : impl_->analysis_scheduler->jobs()) {
+            if (job.value("provider", std::string()) != impl_->musical_provider->id()) continue;
+            const auto status = job.value("status", std::string());
+            if (counts.contains(status)) counts[status] = counts[status].get<int>() + 1;
+            if (status != "completed") active[job.value("track_id", std::string())] = {{"status", status}, {"error", job.value("error", std::string())}};
+        }
+        return json{{"counts", counts}, {"jobs", active}};
+    };
+    CROW_ROUTE(app, "/api/plus/analysis/tracks/<string>/musical").methods(crow::HTTPMethod::Get)
+        ([this](const std::string& id) {
+            if (!impl_->library_service || !impl_->musical_store) return json_err(503, "musical analysis storage unavailable");
+            try {
+                const auto track = impl_->library_service->find(id);
+                if (!track) return json_err(404, "track not found");
+                auto state = impl_->musical_store->state(id, track->content_hash);
+                if (state == "stale") { try { impl_->musical_store->mark_stale(id); } catch (...) {} }
+                auto status = state;
+                json job = nullptr;
+                if (impl_->musical_provider && impl_->analysis_scheduler)
+                    if (const auto found = impl_->analysis_scheduler->job(id, impl_->musical_provider->id())) {
+                        job = {{"status", found->status}, {"error", found->error}};
+                        if (found->status == "pending") status = "queued";
+                        else if (found->status == "running") status = "running";
+                        else if (found->status == "failed" && state == "absent") status = "failed";
+                    }
+                json body = {{"trackId", id}, {"status", status}, {"state", state}, {"job", job},
+                             {"available", impl_->musical_provider != nullptr}, {"analysis", nullptr}};
+                if (const auto document = impl_->musical_store->find(id)) { body["analysis"] = *document; body["analysis"]["stale"] = state == "stale"; }
+                return json_ok(body);
+            } catch (const std::exception& e) { return json_err(400, e.what()); }
+        });
+    CROW_ROUTE(app, "/api/plus/analysis/tracks/<string>/musical").methods(crow::HTTPMethod::Post)
+        ([this, musical_ready, analysis_input](const crow::request& req, const std::string& id) {
+            if (!musical_ready()) return json_err(503, "musical analysis is not available: " + impl_->musical_unavailable_reason);
+            if (req.body.size() > 4096) return json_err(413, "request too large");
+            try {
+                const auto body = req.body.empty() ? json::object() : json::parse(req.body);
+                const auto track = impl_->library_service->find(id);
+                if (!track) return json_err(404, "track not found");
+                if (track->status != "available") return json_err(409, "track asset is " + track->status);
+                const auto job = impl_->analysis_scheduler->enqueue(*track, impl_->musical_provider->id(), body.value("force", false), analysis_input(*track));
+                auto response = json_ok(json(job)); response.code = 202; return response;
+            } catch (const std::exception& e) { return json_err(400, e.what()); }
+        });
+    CROW_ROUTE(app, "/api/plus/analysis/musical").methods(crow::HTTPMethod::Post)
+        ([this, musical_ready, analysis_input](const crow::request& req) {
+            if (!musical_ready()) return json_err(503, "musical analysis is not available: " + impl_->musical_unavailable_reason);
+            if (req.body.size() > 2 * 1024 * 1024) return json_err(413, "request too large");
+            try {
+                const auto body = json::parse(req.body);
+                const auto mode = body.value("mode", std::string("selected"));
+                if (mode != "selected" && mode != "missing" && mode != "stale") return json_err(400, "mode must be selected, missing or stale");
+                const bool force = body.value("force", false);
+                std::vector<library::Track> candidates;
+                if (mode == "selected") {
+                    if (!body.contains("track_ids") || !body["track_ids"].is_array() || body["track_ids"].empty() || body["track_ids"].size() > 5000)
+                        return json_err(400, "selected mode needs 1..5000 track_ids");
+                    for (const auto& value : body["track_ids"]) if (const auto track = impl_->library_service->find(value.get<std::string>())) candidates.push_back(*track);
+                } else {
+                    for (std::size_t offset = 0;; offset += 500) {
+                        const auto page = impl_->library_service->list(offset, 500);
+                        for (const auto& track : page.tracks) candidates.push_back(track);
+                        if (offset + page.tracks.size() >= page.total || page.tracks.empty()) break;
+                    }
+                }
+                int queued = 0, skipped = 0, unavailable = 0;
+                for (const auto& track : candidates) {
+                    if (track.status != "available") { ++unavailable; continue; }
+                    const auto state = impl_->musical_store->state(track.id, track.content_hash);
+                    if ((mode == "missing" && state != "absent") || (mode == "stale" && state != "stale") || (mode == "selected" && state == "ready" && !force)) { ++skipped; continue; }
+                    try { impl_->analysis_scheduler->enqueue(track, impl_->musical_provider->id(), force || state == "stale", analysis_input(track)); ++queued; }
+                    catch (const std::length_error&) { return json_err(429, "analysis queue is full; wait for current jobs or cancel them"); }
+                }
+                auto response = json_ok(json{{"queued", queued}, {"skipped", skipped}, {"unavailable", unavailable}, {"considered", candidates.size()}});
+                response.code = 202; return response;
+            } catch (const std::exception& e) { return json_err(400, e.what()); }
+        });
+    CROW_ROUTE(app, "/api/plus/analysis/musical/summaries").methods(crow::HTTPMethod::Get)
+        ([this, musical_progress] {
+            if (!impl_->musical_store) return json_err(503, "musical analysis storage unavailable");
+            return json_ok(json{{"summaries", impl_->musical_store->summaries()}, {"progress", musical_progress()},
+                                {"available", impl_->musical_provider != nullptr}});
+        });
+    CROW_ROUTE(app, "/api/plus/analysis/cancel").methods(crow::HTTPMethod::Post)
+        ([this](const crow::request& req) {
+            if (!impl_->analysis_scheduler) return json_err(503, "analysis scheduler unavailable");
+            if (req.body.size() > 2 * 1024 * 1024) return json_err(413, "request too large");
+            try {
+                const auto body = req.body.empty() ? json::object() : json::parse(req.body);
+                std::vector<std::string> ids;
+                if (body.contains("track_ids")) for (const auto& value : body.at("track_ids")) ids.push_back(value.get<std::string>());
+                // Cancelling "everything" must be spelled out so an empty list can never do it by accident.
+                if (ids.empty() && body.value("all", false) != true) return json_err(400, "give track_ids, or all:true");
+                const auto provider = body.contains("provider") ? body.at("provider").get<std::string>()
+                    : (impl_->musical_provider ? impl_->musical_provider->id() : std::string());
+                return json_ok(json{{"cancelled", impl_->analysis_scheduler->cancel(ids, provider)}});
+            } catch (const std::exception& e) { return json_err(400, e.what()); }
+        });
+    CROW_ROUTE(app, "/api/plus/analysis/tracks/<string>/cue-suggestions").methods(crow::HTTPMethod::Get)
+        ([this](const crow::request& req, const std::string& id) {
+            if (!impl_->library_service) return json_err(503, "library unavailable");
+            if (!plus_feature_enabled("LIVEPLAY_PLUS_SMART_CUE", true)) return json_err(503, "smart cue disabled");
+            try {
+                const auto track = impl_->library_service->find(id);
+                if (!track) return json_err(404, "track not found");
+                library::CueSuggestionInput input;
+                input.duration_ms = track->media.duration_ms > 0 ? track->media.duration_ms : track->duration_ms;
+                std::string analysis_state = "absent";
+                if (impl_->musical_store) {
+                    analysis_state = impl_->musical_store->state(id, track->content_hash);
+                    if (analysis_state == "ready") if (const auto document = impl_->musical_store->find(id)) input.musical = *document;
+                }
+                if (impl_->waveform_service) {
+                    const auto wave = impl_->waveform_service->status(*track);
+                    if (wave.value("status", std::string()) == "ready" && wave.contains("channels") && wave["channels"].is_array() && !wave["channels"].empty())
+                        for (const auto& v : wave["channels"][0].value("rms", json::array())) input.waveform_rms.push_back(v.get<float>());
+                }
+                std::vector<std::string> wanted;
+                if (const char* intents = req.url_params.get("intents")) {
+                    std::string list = intents; std::size_t begin = 0;
+                    while (begin <= list.size()) {
+                        auto end = list.find(',', begin); if (end == std::string::npos) end = list.size();
+                        if (end > begin) wanted.push_back(list.substr(begin, end - begin));
+                        begin = end + 1;
+                    }
+                }
+                auto body = impl_->cue_suggestions.suggest(input, wanted).to_json();
+                body["trackId"] = id; body["provider"] = impl_->cue_suggestions.id(); body["analysisState"] = analysis_state;
+                body["autoApply"] = false;  // suggestions are only ever proposals
+                return json_ok(body);
             } catch (const std::exception& e) { return json_err(400, e.what()); }
         });
     // Event Loudness never changes source files. It turns a completed, cached

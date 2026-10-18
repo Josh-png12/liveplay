@@ -467,6 +467,20 @@ export interface ProjectSettings {
     maxNegativeGainDb?: number;
     truePeakCeilingDbtp?: number;
   };
+  /** LivePlay+ Event MVP state. Optional so every pre-Plus .liveplay remains valid. */
+  eventShowBoard?: {
+    teams?: Array<{
+      id?: string;
+      name: string;
+      country?: string;
+      grade?: string;
+      entryCueId?: string;
+      exitCueId?: string;
+    }>;
+    selectedTeamId?: string;
+    speechMode?: { duckDb?: number };
+    settings?: { columns?: number };
+  };
 
   /**
    * Number shown for the first playlist item.

@@ -42,6 +42,18 @@
           </span>
           <span v-else>{{ t('serverSettings.engineNotRunning') }}</span>
         </p>
+        <label class="settings-label">{{ t('serverSettings.accessMode') }}</label>
+        <select v-model="draftNetworkProfile" class="settings-select">
+          <option value="local">{{ t('serverSettings.safeLocal') }}</option>
+          <option value="event-lan">{{ t('serverSettings.eventLan') }}</option>
+        </select>
+        <label v-if="draftNetworkProfile === 'event-lan'" class="settings-label settings-label--checkbox"><input v-model="draftRemoteControl" type="checkbox"> {{ t('serverSettings.remoteControl') }}</label>
+        <p class="settings-help">{{ t('serverSettings.serverAddress') }}: {{ displayedAddress }}</p>
+        <p v-if="connectionError" class="settings-help settings-help--warn">{{ connectionError }}</p>
+        <label class="settings-label">{{ t('serverSettings.allowedFolders') }}</label>
+        <div v-for="(folder, index) in draftAllowedFolders" :key="folder" class="folder-row"><code>{{ folder }}</code><button class="settings-btn" @click="draftAllowedFolders.splice(index, 1)">{{ t('serverSettings.removeFolder') }}</button></div>
+        <div class="settings-actions"><button class="settings-btn" @click="addAllowedFolder">{{ t('serverSettings.addFolder') }}</button></div>
+        <label class="settings-label settings-label--checkbox"><input v-model="draftDiagnosticConsole" type="checkbox"> {{ t('serverSettings.diagnosticConsole') }}</label>
       </template>
       <template v-else>
         <label class="settings-label">{{ t('serverSettings.remoteUrl') }}</label>
@@ -61,6 +73,7 @@
           {{ t('serverSettings.restartEngine') }}
         </button>
       </div>
+      <div v-if="hasElectron" class="settings-actions"><button class="settings-btn" @click="openLogs">{{ t('serverSettings.openLogs') }}</button><button class="settings-btn" @click="copyDiagnostics">{{ t('serverSettings.copyDiagnostics') }}</button><span v-if="copied">{{ t('serverSettings.copied') }}</span></div>
     </section>
 
     <!-- ================================================================
@@ -210,6 +223,14 @@ const hasElectron = !!electronApi;
 const draftMode      = ref<'local' | 'remote'>('local');
 const draftRemoteUrl = ref('http://127.0.0.1:4480');
 const draftLocalPort = ref(4480);
+const draftNetworkProfile = ref<'local'|'event-lan'>('local');
+const draftRemoteControl = ref(true);
+const draftAllowedFolders = ref<string[]>([]);
+const draftDiagnosticConsole = ref(false);
+const connectionError = ref('');
+const copied = ref(false);
+const lanAddresses = ref<string[]>([]);
+const displayedAddress = computed(() => `${draftNetworkProfile.value === 'event-lan' && draftRemoteControl.value ? (lanAddresses.value[0] || '0.0.0.0') : '127.0.0.1'}:${draftLocalPort.value}`);
 const serverStatus   = ref<{ running: boolean; pid?: number } | null>(null);
 let stopStatusListener: (() => void) | null = null;
 
@@ -230,21 +251,39 @@ async function loadConnection() {
   draftMode.value      = cfg.mode;
   draftRemoteUrl.value = cfg.remoteUrl || 'http://127.0.0.1:4480';
   draftLocalPort.value = cfg.localPort || 4480;
+  draftNetworkProfile.value = cfg.networkProfile === 'event-lan' ? 'event-lan' : 'local';
+  draftRemoteControl.value = cfg.remoteControlEnabled !== false;
+  draftAllowedFolders.value = Array.isArray(cfg.allowedMediaFolders) ? [...cfg.allowedMediaFolders] : [];
+  draftDiagnosticConsole.value = cfg.diagnosticConsole === true;
   serverStatus.value   = { running: status.running, pid: status.pid };
+  const diagnostic = await electronApi.diagnostics?.(); lanAddresses.value = diagnostic?.addresses || [];
 }
 
 async function applyConnection() {
+  connectionError.value = '';
+  if (draftMode.value === 'local' && draftNetworkProfile.value === 'event-lan' && draftRemoteControl.value && server.authUserCount === 0) {
+    connectionError.value = t('serverSettings.adminRequired');
+    return;
+  }
   if (electronApi) {
     await electronApi.setConfig({
       mode:      draftMode.value,
       remoteUrl: draftRemoteUrl.value.trim(),
       localPort: draftLocalPort.value,
+      networkProfile: draftNetworkProfile.value,
+      remoteControlEnabled: draftRemoteControl.value,
+      allowedMediaFolders: draftAllowedFolders.value,
+      diagnosticConsole: draftDiagnosticConsole.value,
     });
+    if (draftMode.value === 'local') await electronApi.restart();
   } else {
     server.setServerUrl(draftRemoteUrl.value.trim());
   }
 }
 async function restartLocal() { if (electronApi) await electronApi.restart(); }
+async function addAllowedFolder() { const folder = await electronApi?.chooseMediaFolder?.(); if (folder && !draftAllowedFolders.value.includes(folder)) draftAllowedFolders.value.push(folder); }
+async function openLogs() { await electronApi?.openLogs?.(); }
+async function copyDiagnostics() { const d = await electronApi?.diagnostics?.(); const report = [`LivePlay version: ${d?.appVersion || '—'}`, `Server version: ${d?.serverVersion || '—'}`, `Mode: ${draftNetworkProfile.value}`, `Server address: ${displayedAddress.value}`, `Authentication: ${server.authRequired ? 'required' : 'off'}`, `Accounts: ${server.authUserCount}`, `Allowed media folders: ${draftAllowedFolders.value.join('; ') || 'Music; Documents'}`].join('\n'); await navigator.clipboard.writeText(report); copied.value = true; setTimeout(() => { copied.value = false; }, 1800); }
 
 // ---- 2. This connection's meter rate ---------------------------------
 // Offered as a short list rather than a free number: the useful values are the
@@ -408,6 +447,8 @@ watch(() => server.connected, (up) => { if (up) void load(); });
   &.is-busy { color: var(--color-warning, #ffc400); opacity: 1; }
 }
 .settings-modes { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
+.folder-row { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:6px 0; }
+.folder-row code { overflow-wrap:anywhere; }
 .settings-actions {
   display: flex;
   flex-wrap: wrap;

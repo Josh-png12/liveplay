@@ -199,6 +199,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     restart:   () => ipcRenderer.invoke('liveplay-server:restart'),
     shutdown:  () => ipcRenderer.invoke('liveplay-server:shutdown'),
     ensureRunning: () => ipcRenderer.invoke('liveplay-server:ensure-running'),
+    chooseMediaFolder: () => ipcRenderer.invoke('liveplay-server:choose-media-folder'),
+    openLogs: () => ipcRenderer.invoke('liveplay-server:open-logs'),
+    diagnostics: () => ipcRenderer.invoke('liveplay-server:diagnostics'),
     onStateChange: (callback) => {
       const listener = (_e, payload) => callback(payload);
       ipcRenderer.on('liveplay-server:state', listener);

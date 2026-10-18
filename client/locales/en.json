@@ -438,6 +438,8 @@
     "apply": "Apply",
     "retryConnect": "Retry Connection",
     "restartEngine": "Restart Server",
+    "serverAddress": "Server address",
+    "accessMode": "Network access mode", "safeLocal": "Local Mode — this PC only", "eventLan": "Event LAN Mode — authenticated LAN devices", "remoteControl": "Remote Control enabled", "adminRequired": "Create an administrator in Accounts while in Local Mode before enabling Event LAN Mode.", "allowedFolders": "Allowed Media Folders", "addFolder": "Add folder", "removeFolder": "Remove", "diagnosticConsole": "Diagnostic mode (show server console)", "openLogs": "Open Logs Folder", "copyDiagnostics": "Copy Diagnostics", "copied": "Copied",
     "outputDevices": "Output devices",
     "open": "Open",
     "noDevices": "No output devices found"
@@ -1090,10 +1092,32 @@
     "selectAll": "Select visible tracks", "loudnessTitle": "Event Loudness", "loudnessDescription": "Preparation stores an approved playback gain only; source media is never modified.", "analyzeLoudness": "Analyze Loudness", "previewGain": "Preview gain", "applyRecommendedGain": "Apply Recommended Gain", "resetGain": "Reset Gain", "targetLufs": "Target LUFS", "maxPositiveGain": "Max positive gain", "maxNegativeGain": "Max negative gain", "truePeakCeiling": "True peak ceiling", "currentLufs": "Current LUFS", "recommendedGain": "Recommended gain", "estimatedPeak": "Estimated true peak"
   },
   "eventHardware": {
+    "mainOutput": "Main Output", "previewOutput": "Preview / PFL Output", "testMain": "Test Main", "testPreview": "Test Preview", "previewLeft": "Preview Left", "previewRight": "Preview Right",
     "title": "Event Hardware Test", "intro": "Checks the existing audio engine and the visual output without creating another playback engine.", "audioDevice": "Audio output device", "sampleRate": "Sample rate", "bufferSize": "Buffer size", "callbackStatus": "Audio callback status", "underruns": "Underrun count", "videoMonitor": "Video output monitor", "resolution": "Resolution", "refreshRate": "Refresh rate", "ffmpeg": "FFmpeg status", "ffprobe": "FFprobe status", "identify": "Identify Displays", "playAudio": "Play Test Audio", "left": "Left", "right": "Right", "playVideo": "Play Test Video", "avSync": "A/V Sync Test", "stop": "Stop", "idle": "Idle output", "black": "Black", "logo": "Logo", "image": "Custom Image", "chooseImage": "Choose image", "monitor": "Video Output Monitor", "diagnostics": "A/V Diagnostics", "audioPosition": "Current audio position", "videoPosition": "Current video position", "drift": "A/V drift", "maxDrift": "Max drift", "corrections": "Corrections", "cache": "Regenerable media cache", "clearCache": "Clear Regenerable Media Cache", "harness": "Physical test harness", "startHarness": "Start 15-minute test", "finishHarness": "Finish test", "manualCheck": "Human confirmation: listen for glitches and verify picture output.", "noSource": "Choose a video cue in Event MVP before running a video test.", "unavailable": "Unavailable", "ok": "Available", "videoErrors": "Video errors", "masterPeak": "MASTER PEAK", "masterRms": "RMS", "clipping": "Clipping", "outputGain": "Output gain", "limiterReduction": "Limiter gain reduction", "yes": "YES", "no": "No"
   },
   "eventMvp": {
+    "country": "Country", "grade": "Grade",
     "title": "Event MVP", "description": "Sports show control using the existing library and cues.", "close": "Close", "refresh": "Refresh", "template": "Create sports template", "search": "Search library", "unknownArtist": "Unknown artist", "openProject": "Open a project to create cues.", "selectTrack": "Select a track to edit its cue.", "zoom": "Zoom", "createCue": "Create cue", "preview": "Open cue", "play": "Play", "stop": "Stop", "presets": "Cue presets", "presetEntry": "Sports Entry", "presetExit": "Sports Exit", "presetBackground": "Background", "presetAwards": "Awards", "tags": "Manual tags", "energy": "Energy", "role": "Event role", "approved": "School approved", "saveTags": "Save tags", "showBoard": "Show Board", "speechOn": "Speech Mode", "speechOff": "Speech Mode off", "stopAll": "Stop All", "fadeAll": "Fade All", "next": "Next", "assignEntry": "Assign entry", "assignExit": "Assign exit", "entry": "Entry", "exit": "Exit", "playing": "Playing", "ready": "Ready", "eventLoudness": "Event Loudness", "eventOutdoor": "Event Outdoor", "eventLoudnessValues": "Target {target} LUFS · gain {down}…+{up} dB · ceiling {peak} dBTP. User EQ is unchanged.", "masterPeak": "MASTER PEAK", "masterRms": "RMS", "clipping": "Clipping", "outputGain": "Output gain", "limiterReduction": "Limiter gain reduction", "yes": "YES", "no": "No"
+  },
+  "musical": {
+    "title": "Music analysis", "bpm": "BPM", "key": "Key", "camelot": "Camelot", "energy": "Energy", "statusColumn": "Analysis",
+    "analyze": "Analyze", "reanalyze": "Reanalyze", "analyzeSelected": "Analyze Selected", "analyzeMissing": "Analyze Missing", "analyzeStale": "Analyze Outdated",
+    "cancelAnalysis": "Cancel Analysis", "details": "Details", "notAnalyzed": "This track has not been analyzed yet. Analysis only runs when you ask for it.",
+    "providerMissing": "Music analysis is not available on this server (optional Python + librosa worker not installed).",
+    "staleHint": "The audio changed since this analysis; the old values are shown until you reanalyze.",
+    "progress": "Analyzing: {active} remaining · {done} done", "idle": "No analysis running", "failedCount": "{count} failed",
+    "bpmTitle": "Tempo confidence: {confidence}", "ambiguous": "Tempo is ambiguous; other plausible values: {alternatives} BPM.", "ambiguousShort": "Tempo may be double or half time",
+    "provider": "Provider", "analyzedAt": "Analyzed", "beatGrid": "Beat grid", "beatGridValue": "first beat {first} ms · {interval} ms · {tempo} BPM",
+    "constantTempo": "constant tempo", "variableTempo": "{count} tempo segments", "beats": "Beats", "downbeats": "Downbeats",
+    "downbeatsUnavailable": "not available from this provider", "sections": "Sections", "noSections": "No reliable sections were found for this track.",
+    "overlays": "Waveform overlays", "showBeats": "Beats", "showDownbeats": "Downbeats", "showSections": "Sections",
+    "suggestions": "Cue suggestions", "suggest": "Suggest cues", "preview": "Preview", "apply": "Apply", "reject": "Reject",
+    "noSuggestions": "No reliable suggestion for this track.", "suggestNeedsData": "Analyze the track (or load its waveform) first so suggestions have something to work with.",
+    "applied": "Applied “{name}” to the cue range.", "previewNeedsCue": "Create the cue first to audition a suggestion.",
+    "status": { "absent": "Not analyzed", "queued": "Queued", "running": "Analyzing…", "ready": "Ready", "stale": "Outdated", "failed": "Failed", "unavailable": "Unavailable" },
+    "confidence": { "high": "high", "medium": "medium", "low": "low" },
+    "section": { "intro": "Intro", "verse": "Verse", "chorus": "Chorus", "build": "Build", "drop": "Drop", "break": "Break", "bridge": "Bridge", "outro": "Outro", "unknown": "Section" },
+    "intent": { "strong-start": "Strong Start", "section-start": "Section Start", "high-energy": "High Energy", "steady-background": "Steady Background", "clean-outro": "Clean Outro" }
   },
   "workspace": {
     "barLabel": "Workspace panes",

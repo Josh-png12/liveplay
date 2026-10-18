@@ -112,7 +112,7 @@
 namespace liveplay::net {
 
 struct ControlServerConfig {
-    std::string   bind_address       = "0.0.0.0";
+    std::string   bind_address       = "127.0.0.1";
     std::uint16_t port               = 4480;
     // Meter frame rate. Peaks between frames are never lost — the broadcaster
     // uses consuming max-since-read meter reads — so this only sets how

@@ -10,6 +10,7 @@ const ffmpeg = require('fluent-ffmpeg');
 const { promisify } = require('util');
 const https = require('https');
 const { pathToFileURL } = require('url');
+const os = require('os');
 const execPromise = promisify(exec);
 
 let ffmpegPath = null;
@@ -48,6 +49,8 @@ function liveplayConfigPath() {
 function liveplayLockPath() {
   return path.join(app.getPath('userData'), LIVEPLAY_LOCK_FILENAME);
 }
+function liveplayLogsPath() { return path.join(app.getPath('userData'), 'logs'); }
+function liveplayMachinePath() { return path.join(app.getPath('userData'), 'server-state'); }
 
 function readLiveplayLock() {
   try {
@@ -98,9 +101,13 @@ function readLiveplayConfig() {
       mode:      parsed.mode === 'remote' ? 'remote' : 'local',
       remoteUrl: typeof parsed.remoteUrl === 'string' ? parsed.remoteUrl : `http://127.0.0.1:${LIVEPLAY_DEFAULT_PORT}`,
       localPort: Number.isInteger(parsed.localPort) ? parsed.localPort : LIVEPLAY_DEFAULT_PORT,
+      networkProfile: parsed.networkProfile === 'event-lan' ? 'event-lan' : 'local',
+      remoteControlEnabled: parsed.remoteControlEnabled !== false,
+      allowedMediaFolders: Array.isArray(parsed.allowedMediaFolders) ? parsed.allowedMediaFolders.filter(v => typeof v === 'string' && v) : [],
+      diagnosticConsole: parsed.diagnosticConsole === true,
     };
   } catch {
-    return { mode: 'local', remoteUrl: `http://127.0.0.1:${LIVEPLAY_DEFAULT_PORT}`, localPort: LIVEPLAY_DEFAULT_PORT };
+    return { mode: 'local', remoteUrl: `http://127.0.0.1:${LIVEPLAY_DEFAULT_PORT}`, localPort: LIVEPLAY_DEFAULT_PORT, networkProfile: 'local', remoteControlEnabled: true, allowedMediaFolders: [], diagnosticConsole: false };
   }
 }
 
@@ -569,60 +576,36 @@ async function startLiveplayServer() {
   const serverArgs = [
     '--port',    String(cfg.localPort),
     '--pidfile', lockPath,
+    '--bind', cfg.networkProfile === 'event-lan' && cfg.remoteControlEnabled ? '0.0.0.0' : '127.0.0.1',
+    '--cors-origin', app.isPackaged ? 'null' : 'http://localhost:3000',
   ];
+  if (cfg.networkProfile === 'event-lan' && cfg.remoteControlEnabled) serverArgs.push('--require-auth');
+  const roots = cfg.allowedMediaFolders.length ? cfg.allowedMediaFolders : [app.getPath('music'), app.getPath('documents')];
+  for (const root of roots) serverArgs.push('--fs-root', root);
   const serverEnv = { ...process.env };
   if (ffmpegPath) serverEnv.LIVEPLAY_FFMPEG = ffmpegPath;
   if (ffprobePath) serverEnv.LIVEPLAY_FFPROBE = ffprobePath;
+  // Optional musical-analysis environment (server/tools/mir/setup-mir.ps1). Absent = the feature stays off.
+  if (!serverEnv.LIVEPLAY_MIR_PYTHON && process.env.LOCALAPPDATA) {
+    const mirPython = path.join(process.env.LOCALAPPDATA, 'LivePlay', 'mir-env', 'Scripts', 'python.exe');
+    if (fs.existsSync(mirPython)) serverEnv.LIVEPLAY_MIR_PYTHON = mirPython;
+  }
+  fs.mkdirSync(liveplayLogsPath(), { recursive: true });
+  fs.mkdirSync(liveplayMachinePath(), { recursive: true });
+  serverEnv.LIVEPLAY_LOG_DIR = liveplayLogsPath();
+  serverEnv.LIVEPLAY_MACHINE_DIR = liveplayMachinePath();
+  serverEnv.LIVEPLAY_CONFIG = path.join(liveplayMachinePath(), 'liveplay.json');
   try {
-    if (process.platform === 'win32') {
-      // `cmd /c start "" /D "<cwd>" "<exe>" <args>` opens a visible console
-      // window in the taskbar. The empty-string title avoids the Windows quirk
-      // where the first quoted arg to `start` is treated as the window title
-      // instead of the executable. The server binary's own embedded icon and
-      // the title it sets via SetConsoleTitle() then appear in the taskbar.
-      liveplayServerProc = spawn(
-        'cmd.exe',
-        ['/c', 'start', '',
-         '/D', path.dirname(exePath),
-         exePath, ...serverArgs],
-        {
-          stdio: 'ignore',
-          windowsHide: false,
-          detached: true,
-          env: serverEnv,
-        },
-      );
-    } else if (process.platform === 'darwin') {
-      // Open a Terminal.app window that runs the server. Quoting is fiddly
-      // because the AppleScript is one string — escape the path manually.
-      const shellQuote = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
-      const cmdLine = [exePath, ...serverArgs].map(shellQuote).join(' ');
-      // Multi-statement AppleScript: open the window then activate so
-      // Terminal comes to the foreground rather than opening silently
-      // behind the LivePlay window.
-      const appleScript = [
-        'tell application "Terminal"',
-        `  do script "${cmdLine.replace(/"/g, '\\"')}"`,
-        '  activate',
-        'end tell',
-      ].join('\n');
-      liveplayServerProc = spawn(
-        'osascript',
-        ['-e', appleScript],
-        { stdio: 'ignore', detached: true, env: serverEnv },
-      );
-    } else {
-      // Linux / other POSIX: spawn directly. If the user launched the
-      // Electron app from a terminal, the server inherits that terminal
-      // and is visible. If launched from a desktop launcher, there's no
-      // console — best-effort.
-      liveplayServerProc = spawn(exePath, serverArgs, {
-        cwd: path.dirname(exePath),
-        stdio: 'ignore',
-        detached: true,
-        env: serverEnv,
-      });
-    }
+    const sessionLog = fs.openSync(path.join(liveplayLogsPath(), 'liveplay-launcher.log'), 'a');
+    liveplayServerProc = spawn(exePath, serverArgs, {
+      cwd: path.dirname(exePath), stdio: ['ignore', sessionLog, sessionLog],
+      windowsHide: !cfg.diagnosticConsole, detached: false, env: serverEnv,
+    });
+    liveplayServerPid = liveplayServerProc.pid;
+    liveplayServerProc.once('exit', (code, signal) => {
+      console.warn('[liveplay-server] exited', { code, signal });
+      liveplayServerProc = null; liveplayServerPid = null; deleteLiveplayLock(); notifyServerStateChange();
+    });
   } catch (e) {
     console.error('[liveplay-server] spawn failed:', e);
     liveplayServerProc = null;
@@ -630,16 +613,8 @@ async function startLiveplayServer() {
     return;
   }
 
-  // The spawn handle we hold is either cmd.exe (Windows), osascript (macOS),
-  // or the server itself (Linux). We don't track its lifetime — the real
-  // server's PID arrives via the pidfile within ~1 s. unref() so Electron
-  // can quit independently.
-  try { liveplayServerProc.unref(); } catch {}
-  liveplayServerProc = null;   // discard the launcher handle
-
-  // Poll the pidfile so the renderer (and onStateChange listeners) learn
-  // the real PID. Don't await — this returns to the caller immediately;
-  // ensureRunning() handles the "wait until healthy" gate.
+  // The server writes the pidfile after binding; health polling below is the
+  // readiness gate used by the renderer.
   void pollPidfileForServerPid(lockPath);
 
   notifyServerStateChange();
@@ -719,6 +694,9 @@ ipcMain.handle('liveplay-server:set-config', (_e, incoming) => {
     next.localPort = LIVEPLAY_DEFAULT_PORT;
   }
   if (next.mode !== 'local' && next.mode !== 'remote') next.mode = 'local';
+  if (next.networkProfile !== 'event-lan') next.networkProfile = 'local';
+  next.remoteControlEnabled = next.remoteControlEnabled !== false;
+  next.allowedMediaFolders = Array.isArray(next.allowedMediaFolders) ? next.allowedMediaFolders.filter(v => typeof v === 'string' && v) : [];
 
   writeLiveplayConfig(next);
 
@@ -731,6 +709,9 @@ ipcMain.handle('liveplay-server:set-config', (_e, incoming) => {
 });
 
 ipcMain.handle('liveplay-server:get-status', () => liveplayServerStatus());
+ipcMain.handle('liveplay-server:choose-media-folder', async () => { const out = await dialog.showOpenDialog({ properties: ['openDirectory'] }); return out.canceled ? null : out.filePaths[0]; });
+ipcMain.handle('liveplay-server:open-logs', async () => { fs.mkdirSync(liveplayLogsPath(), { recursive: true }); return shell.openPath(liveplayLogsPath()); });
+ipcMain.handle('liveplay-server:diagnostics', () => ({ appVersion: app.getVersion(), serverVersion: app.getVersion(), logsPath: liveplayLogsPath(), config: readLiveplayConfig(), pid: liveplayServerPid, addresses: Object.values(os.networkInterfaces()).flat().filter(value => value && value.family === 'IPv4' && !value.internal).map(value => value.address) }));
 
 // Generic app lifecycle controls used by the connection-lost modal.
 // `relaunch` re-spawns the renderer in a clean state (the detached
@@ -3525,11 +3506,21 @@ if (!gotTheLock) {
       console.error('Warning: Bundled ffmpeg failed to initialize. Audio processing may be limited.');
     }
 
-    // At boot we ONLY adopt an already-running server (via the lockfile).
-    // Spawning a fresh server is deferred until the user explicitly picks
-    // Local mode in the welcome screen — otherwise we'd briefly spawn a
-    // server even for users who only ever use Remote mode.
-    void tryReattachLiveplayServer();
+    // A packaged Local installation is one application: start its server,
+    // wait for readiness, then create the renderer. Remote mode deliberately
+    // skips this path.
+    const bootConfig = readLiveplayConfig();
+    if (bootConfig.mode === 'local') {
+      await startLiveplayServer();
+      let ready = false;
+      for (let i = 0; i < 50 && !ready; i++) {
+        ready = await probeServerHealth(bootConfig.localPort, 300);
+        if (!ready) await new Promise(resolve => setTimeout(resolve, 200));
+      }
+      if (!ready) dialog.showErrorBox('LivePlay Server', `The audio server could not start on port ${bootConfig.localPort}. Open Settings → Server → Open Logs Folder for details.`);
+    } else {
+      await tryReattachLiveplayServer();
+    }
 
     // Best-effort firewall rules so LAN discovery's inbound UDP isn't dropped
     // (no-op on non-Windows / non-elevated; the installer is authoritative).
@@ -3637,11 +3628,10 @@ app.on('window-all-closed', () => {
   if (apiServer) {
     apiServer.close();
   }
-  // The liveplay audio server is intentionally NOT stopped here — it was
-  // spawned detached so it survives renderer reloads and Electron quits.
-  // Users explicitly shut it down via the `liveplay-server:shutdown` IPC
-  // (or by killing the PID directly). On next launch we reattach via the
-  // lockfile.
+  // A server owned by this desktop session is a child process and must not be
+  // left behind after normal exit. An independently started/reattached server
+  // has no ChildProcess handle and is left alone.
+  if (liveplayServerProc) stopLiveplayServer();
   if (process.platform !== 'darwin') {
     app.quit();
   }

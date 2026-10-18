@@ -18,3 +18,7 @@ The default timeout is 30 seconds. Cancellation, timeout, invalid output and une
 ## `ffmpeg-basic` provider
 
 The Event MVP adds an optional `liveplay-ffmpeg-analysis-worker` target using the same JSON Lines envelope. It reports only nullable duration, peak/RMS, integrated loudness and true peak fields plus bounded `recommended_gain_db`. The server discovers it beside the server executable or through `LIVEPLAY_FFMPEG_ANALYSIS_WORKER`; FFmpeg is selected with `LIVEPLAY_FFMPEG` or `PATH`. Missing FFmpeg, malformed output, timeout and worker exit fail only that analysis job. Installers must package the worker and a license-compliant FFmpeg build before enabling `LIVEPLAY_PLUS_BASIC_ANALYSIS`.
+
+## `librosa-mir` provider (Phase 2)
+
+Same envelope; `analyze` may carry `"keepAlive": true`, in which case the worker answers and then waits for the next line (EOF ends it). `health` additionally returns `providerVersion` and a `capabilities` object (`downbeats` is `false`). The result is `data: {"musical": {...}}` and must echo `sourceHash` = the request's `contentHash`; the server validates and normalises it (Camelot is recomputed). Worker: `server/tools/mir/liveplay_mir_worker.py`.

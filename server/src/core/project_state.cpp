@@ -6745,6 +6745,25 @@ audio::MixerChannelId ProjectState::mixer_for_bus(const std::string& bus_id) con
     return it == bus_routings_.end() ? audio::MixerChannelId{} : it->second.mixer;
 }
 
+bool ProjectState::route_diagnostic_cue_to_preview(const audio::CueId& cue) {
+    audio::MixerChannelId mixer;
+    {
+        std::lock_guard lock{mutex_};
+        mixer = mixer_for_bus(preview_bus_id_locked());
+    }
+    if (cue.empty() || mixer.empty()) return false;
+    auto* item = engine_.find_cue(cue);
+    if (!item) return false;
+    engine_.unroute_item_from_all_mixers(cue);
+    if (item->source_channel_count() >= 2) {
+        engine_.route_item_source_to_mixer(cue, 0, mixer, 0.0f, 0);
+        engine_.route_item_source_to_mixer(cue, 1, mixer, 0.0f, 1);
+    } else {
+        engine_.route_item_source_to_mixer(cue, 0, mixer, 0.0f, audio::kAllMixerLanes);
+    }
+    return true;
+}
+
 bool ProjectState::start_preview(const std::string& item_uuid) {
     if (item_uuid.empty()) return false;
 

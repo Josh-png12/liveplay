@@ -92,3 +92,7 @@ These routes reuse operator authentication and exclude filesystem access by API 
 Native tests exercise the empty/stopped scheduler, nullable/failed records, running-job recovery, independent Track access and protocol correlation rejection. HTTP E2E submits an unavailable provider and verifies project/cue snapshots remain unchanged. This validates data/control isolation, not an uninterrupted-audio latency guarantee under CPU/IO contention.
 
 Before a real provider: versioned cache keys, granular schema validators, concurrency/resource budgets, job history/compaction, all-or-nothing result ownership across multiple providers, malformed-store backups and a corpus with live audio contention measurements. No AutoDJ, beatmatching, stems or AI is part of this phase.
+
+## Phase 2 addendum
+
+The statement above that no analyzers ship is superseded for musical analysis: an optional `librosa-mir` provider (external Python worker) now exists. See [PHASE_2_SMART_MUSIC_ENGINE](PHASE_2_SMART_MUSIC_ENGINE.md). The scheduler gained per-provider result sinks, force re-run, cancellation, idle release and a 4096-job bound; musical results live in `analysis/musical/` and never replace the per-track loudness record.

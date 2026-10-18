@@ -1,5 +1,9 @@
 # LivePlay+: roadmap incremental
 
+## Estado Phase 1.9
+
+La fase de fiabilidad operativa y release Windows añade estado opcional del Show Board, Main/Preview sobre el routing existente, perfiles Local/Event LAN, carpetas autorizadas, gate de administrador, logs/diagnóstico, lifecycle del servidor hijo e instalador x64. Musical Intelligence continúa fuera de alcance. Véase [PHASE_1_9_RELEASE.md](PHASE_1_9_RELEASE.md).
+
 Fecha: 2026-09-30. Base: LivePlay 2.5.0, commit `44ac17c885ff4a6dde96e8332001735494ccc50e`. Estado: **propuesta; funcionalidades grandes no implementadas**. El diagnóstico, las referencias de código y la evaluación de herramientas están en [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## 1. Objetivo y reglas de evolución
@@ -243,3 +247,7 @@ Video V1.1 visual transitions, idle output, display selection, display
 identification, hardware test, A/V diagnostics, cache controls and FFmpeg
 resolution are implemented. Physical Windows hardware validation remains a
 manual RC gate; advanced musical analysis and automation remain out of scope.
+
+## Phase 2 — Smart Music Engine (implemented)
+
+BPM, beats, piecewise beat grid, key/Camelot, analysed energy, conservative structure and Smart Cue V1 via an optional librosa worker. Not implemented: downbeats (no suitable provider), manual BPM/grid correction editor, verse/chorus labelling, real-music accuracy benchmarks. See PHASE_2_SMART_MUSIC_ENGINE.md.

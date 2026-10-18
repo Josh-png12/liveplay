@@ -1,5 +1,7 @@
 # LivePlay+: arquitectura actual y propuesta de evolución
 
+Los perfiles seguros de red, estado escribible de máquina, persistencia del Show Board, Preview/PFL y empaquetado de Phase 1.9 se documentan en [PHASE_1_9_RELEASE.md](PHASE_1_9_RELEASE.md).
+
 Fecha de revisión: 2026-09-30. Base: LivePlay 2.5.0, commit `44ac17c885ff4a6dde96e8332001735494ccc50e`.
 
 Este documento conserva el diagnóstico inicial y la propuesta modular para LivePlay+. Library/Import, su persistencia durable y la foundation de análisis ya están implementados hasta Phase 1.6; los módulos musicales futuros siguen siendo propuesta. El estado actualizado aparece al final y en LIBRARY_IMPORT.md / ANALYSIS_ARCHITECTURE.md.

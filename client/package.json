@@ -15,7 +15,7 @@
     "generate": "cross-env NODE_ENV=production nuxt generate",
     "preview": "nuxt preview",
     "typecheck": "nuxt prepare && vue-tsc --noEmit",
-    "test": "node tests/window-bounds-tests.js && node tests/settings-form-placement-tests.js && node tests/mixer-regression-tests.js && node tests/library-tests.js && node tests/video-output-tests.js"
+    "test": "node tests/window-bounds-tests.js && node tests/settings-form-placement-tests.js && node tests/mixer-regression-tests.js && node tests/library-tests.js && node tests/video-output-tests.js && node tests/phase19-tests.js && node tests/musical-tests.js"
   },
   "keywords": [
     "electron",
@@ -106,11 +106,22 @@
       "icon": "assets/icons/4092w/app_icon_darkmode@4092px.png",
       "extraResources": [
         {
-          "from": "../server/build/Release",
+          "from": "../server/build",
           "to": "server-bin",
           "filter": [
             "liveplay-server.exe",
+            "liveplay-analysis-worker-mock.exe",
+            "liveplay-ffmpeg-analysis-worker.exe",
             "*.dll"
+          ]
+        },
+        {
+          "from": "../server/tools/mir",
+          "to": "server-bin/mir",
+          "filter": [
+            "liveplay_mir_worker.py",
+            "requirements.txt",
+            "setup-mir.ps1"
           ]
         }
       ]

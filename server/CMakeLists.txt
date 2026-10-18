@@ -174,6 +174,8 @@ add_executable(liveplay-server
     src/library/recommendations.cpp
     src/analysis/analysis.cpp
         src/analysis/worker_adapter.cpp
+        src/analysis/musical.cpp
+        src/library/cue_suggestions.cpp
         src/library/atomic_json.cpp
     src/library/track_repository.cpp
     src/library/store_lock.cpp
@@ -397,6 +399,53 @@ if(LIVEPLAY_BUILD_TESTS)
         target_link_libraries(liveplay-library-benchmark PRIVATE unofficial::taglib::tag)
     endif()
     add_test(NAME library COMMAND liveplay-library-tests)
+
+    # Phase 2 musical analysis: model, store, cue suggestions, scheduler integration.
+    add_executable(liveplay-musical-tests
+        tests/musical_analysis_test.cpp
+        src/library/data_directory.cpp
+        src/library/maintenance.cpp
+        src/analysis/analysis.cpp
+        src/analysis/worker_adapter.cpp
+        src/analysis/musical.cpp
+        src/library/cue_suggestions.cpp
+        src/library/atomic_json.cpp
+        src/library/track_repository.cpp
+        src/library/store_lock.cpp
+        src/library/library_service.cpp
+        src/library/media_service.cpp
+        src/import/import_service.cpp
+        src/meta/metadata.cpp
+        src/logger.cpp
+    )
+    target_include_directories(liveplay-musical-tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(liveplay-musical-tests PRIVATE
+        nlohmann_json::nlohmann_json liveplay_miniaudio Threads::Threads)
+    if(TARGET unofficial-sodium::sodium)
+        target_link_libraries(liveplay-musical-tests PRIVATE unofficial-sodium::sodium)
+    elseif(TARGET sodium)
+        target_link_libraries(liveplay-musical-tests PRIVATE sodium)
+    endif()
+    if(TARGET TagLib::tag)
+        target_link_libraries(liveplay-musical-tests PRIVATE TagLib::tag)
+    elseif(TARGET TagLib::TagLib)
+        target_link_libraries(liveplay-musical-tests PRIVATE TagLib::TagLib)
+    elseif(TARGET unofficial::taglib::tag)
+        target_link_libraries(liveplay-musical-tests PRIVATE unofficial::taglib::tag)
+    endif()
+    add_test(NAME musical COMMAND liveplay-musical-tests)
+    # Optional MIR worker (Python + librosa). Installed beside the server so
+    # `<exe dir>/mir/liveplay_mir_worker.py` is discovered without configuration.
+    add_custom_command(TARGET liveplay-server POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:liveplay-server>/mir
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/mir/liveplay_mir_worker.py
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/mir/requirements.txt
+            $<TARGET_FILE_DIR:liveplay-server>/mir)
+    set(LIVEPLAY_MIR_PYTHON "${CMAKE_CURRENT_SOURCE_DIR}/tools/mir/.venv/Scripts/python.exe")
+    if(EXISTS "${LIVEPLAY_MIR_PYTHON}")
+        add_test(NAME mir_worker COMMAND ${LIVEPLAY_MIR_PYTHON} -I ${CMAKE_CURRENT_SOURCE_DIR}/tests/mir/test_worker.py)
+    endif()
     add_executable(liveplay-analysis-worker-mock tests/analysis_worker_mock.cpp src/library/store_lock.cpp)
     target_include_directories(liveplay-analysis-worker-mock PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
     target_link_libraries(liveplay-analysis-worker-mock PRIVATE nlohmann_json::nlohmann_json)

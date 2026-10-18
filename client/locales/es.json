@@ -438,6 +438,8 @@
     "apply": "Aplicar",
     "retryConnect": "Reintentar conexión",
     "restartEngine": "Reiniciar servidor",
+    "serverAddress": "Dirección del servidor",
+    "accessMode": "Modo de acceso de red", "safeLocal": "Modo local — sólo este PC", "eventLan": "Modo LAN de evento — dispositivos autenticados", "remoteControl": "Control remoto activado", "adminRequired": "Crea un administrador en Cuentas desde Modo local antes de activar Modo LAN de evento.", "allowedFolders": "Carpetas de medios permitidas", "addFolder": "Añadir carpeta", "removeFolder": "Quitar", "diagnosticConsole": "Modo diagnóstico (mostrar consola del servidor)", "openLogs": "Abrir carpeta de logs", "copyDiagnostics": "Copiar diagnóstico", "copied": "Copiado",
     "outputDevices": "Dispositivos de salida",
     "open": "Abrir",
     "noDevices": "No se encontraron dispositivos de salida"
@@ -1090,10 +1092,32 @@
     "selectAll": "Seleccionar pistas visibles", "loudnessTitle": "Sonoridad de evento", "loudnessDescription": "La preparación sólo guarda un gain de reproducción aprobado; nunca modifica el audio original.", "analyzeLoudness": "Analizar sonoridad", "previewGain": "Previsualizar gain", "applyRecommendedGain": "Aplicar gain recomendado", "resetGain": "Restablecer gain", "targetLufs": "LUFS objetivo", "maxPositiveGain": "Ganancia positiva máxima", "maxNegativeGain": "Ganancia negativa máxima", "truePeakCeiling": "Techo de true peak", "currentLufs": "LUFS actual", "recommendedGain": "Gain recomendado", "estimatedPeak": "True peak estimado"
   },
   "eventHardware": {
+    "mainOutput": "Salida principal", "previewOutput": "Salida Preview / PFL", "testMain": "Probar principal", "testPreview": "Probar Preview", "previewLeft": "Preview izquierda", "previewRight": "Preview derecha",
     "title": "Prueba de hardware de evento", "intro": "Comprueba el motor de audio existente y la salida visual sin crear otro motor de reproducción.", "audioDevice": "Dispositivo de salida de audio", "sampleRate": "Frecuencia de muestreo", "bufferSize": "Tamaño de búfer", "callbackStatus": "Estado del callback de audio", "underruns": "Conteo de underruns", "videoMonitor": "Monitor de salida de vídeo", "resolution": "Resolución", "refreshRate": "Frecuencia de actualización", "ffmpeg": "Estado de FFmpeg", "ffprobe": "Estado de FFprobe", "identify": "Identificar pantallas", "playAudio": "Reproducir audio de prueba", "left": "Izquierda", "right": "Derecha", "playVideo": "Reproducir vídeo de prueba", "avSync": "Prueba de sincronía A/V", "stop": "Detener", "idle": "Salida inactiva", "black": "Negro", "logo": "Logo", "image": "Imagen personalizada", "chooseImage": "Elegir imagen", "monitor": "Monitor de salida de vídeo", "diagnostics": "Diagnóstico A/V", "audioPosition": "Posición actual de audio", "videoPosition": "Posición actual de vídeo", "drift": "Deriva A/V", "maxDrift": "Deriva máxima", "corrections": "Correcciones", "cache": "Caché de medios regenerable", "clearCache": "Limpiar caché de medios regenerable", "harness": "Prueba física", "startHarness": "Iniciar prueba de 15 minutos", "finishHarness": "Finalizar prueba", "manualCheck": "Confirmación humana: escucha glitches y verifica la salida de imagen.", "noSource": "Elige un cue de vídeo en Event MVP antes de ejecutar una prueba de vídeo.", "unavailable": "No disponible", "ok": "Disponible", "videoErrors": "Errores de vídeo", "masterPeak": "PICO MASTER", "masterRms": "RMS", "clipping": "Clipping", "outputGain": "Gain de salida", "limiterReduction": "Reducción del limitador", "yes": "SÍ", "no": "No"
   },
   "eventMvp": {
+    "country": "País", "grade": "Grado",
     "title": "MVP de evento", "description": "Control de evento deportivo usando la biblioteca y cues existentes.", "close": "Cerrar", "refresh": "Actualizar", "template": "Crear plantilla deportiva", "search": "Buscar en biblioteca", "unknownArtist": "Artista desconocido", "openProject": "Abre un proyecto para crear cues.", "selectTrack": "Selecciona un track para editar su cue.", "zoom": "Zoom", "createCue": "Crear cue", "preview": "Abrir cue", "play": "Reproducir", "stop": "Detener", "presets": "Presets de cue", "presetEntry": "Entrada deportiva", "presetExit": "Salida deportiva", "presetBackground": "Fondo", "presetAwards": "Premios", "tags": "Tags manuales", "energy": "Energía", "role": "Rol del evento", "approved": "Aprobado por escuela", "saveTags": "Guardar tags", "showBoard": "Show Board", "speechOn": "Modo discurso", "speechOff": "Desactivar discurso", "stopAll": "Detener todo", "fadeAll": "Fundir todo", "next": "Siguiente", "assignEntry": "Asignar entrada", "assignExit": "Asignar salida", "entry": "Entrada", "exit": "Salida", "playing": "Reproduciendo", "ready": "Listo", "eventLoudness": "Sonoridad de evento", "eventOutdoor": "Evento exterior", "eventLoudnessValues": "Objetivo {target} LUFS · gain {down}…+{up} dB · techo {peak} dBTP. El EQ del usuario no cambia.", "masterPeak": "PICO MASTER", "masterRms": "RMS", "clipping": "Clipping", "outputGain": "Gain de salida", "limiterReduction": "Reducción del limitador", "yes": "SÍ", "no": "No"
+  },
+  "musical": {
+    "title": "Análisis musical", "bpm": "BPM", "key": "Tonalidad", "camelot": "Camelot", "energy": "Energía", "statusColumn": "Análisis",
+    "analyze": "Analizar", "reanalyze": "Reanalizar", "analyzeSelected": "Analizar selección", "analyzeMissing": "Analizar pendientes", "analyzeStale": "Analizar desactualizados",
+    "cancelAnalysis": "Cancelar análisis", "details": "Detalles", "notAnalyzed": "Esta pista aún no se ha analizado. El análisis solo se ejecuta cuando lo pides.",
+    "providerMissing": "El análisis musical no está disponible en este servidor (falta el worker opcional de Python + librosa).",
+    "staleHint": "El audio cambió desde este análisis; se muestran los valores antiguos hasta que reanalices.",
+    "progress": "Analizando: quedan {active} · {done} listas", "idle": "Ningún análisis en curso", "failedCount": "{count} con error",
+    "bpmTitle": "Confianza del tempo: {confidence}", "ambiguous": "El tempo es ambiguo; otros valores plausibles: {alternatives} BPM.", "ambiguousShort": "El tempo podría ser el doble o la mitad",
+    "provider": "Proveedor", "analyzedAt": "Analizado", "beatGrid": "Rejilla de beats", "beatGridValue": "primer beat {first} ms · {interval} ms · {tempo} BPM",
+    "constantTempo": "tempo constante", "variableTempo": "{count} segmentos de tempo", "beats": "Beats", "downbeats": "Downbeats",
+    "downbeatsUnavailable": "no disponible con este proveedor", "sections": "Secciones", "noSections": "No se encontraron secciones fiables en esta pista.",
+    "overlays": "Capas sobre la waveform", "showBeats": "Beats", "showDownbeats": "Downbeats", "showSections": "Secciones",
+    "suggestions": "Sugerencias de cue", "suggest": "Sugerir cues", "preview": "Previsualizar", "apply": "Aplicar", "reject": "Rechazar",
+    "noSuggestions": "No hay ninguna sugerencia fiable para esta pista.", "suggestNeedsData": "Analiza la pista (o carga su waveform) primero para que haya datos con los que sugerir.",
+    "applied": "Se aplicó «{name}» al rango del cue.", "previewNeedsCue": "Crea primero el cue para escuchar una sugerencia.",
+    "status": { "absent": "Sin analizar", "queued": "En cola", "running": "Analizando…", "ready": "Listo", "stale": "Desactualizado", "failed": "Error", "unavailable": "No disponible" },
+    "confidence": { "high": "alta", "medium": "media", "low": "baja" },
+    "section": { "intro": "Intro", "verse": "Estrofa", "chorus": "Estribillo", "build": "Subida", "drop": "Drop", "break": "Break", "bridge": "Puente", "outro": "Outro", "unknown": "Sección" },
+    "intent": { "strong-start": "Inicio potente", "section-start": "Inicio de sección", "high-energy": "Alta energía", "steady-background": "Fondo estable", "clean-outro": "Final limpio" }
   },
   "workspace": {
     "barLabel": "Paneles del espacio de trabajo",

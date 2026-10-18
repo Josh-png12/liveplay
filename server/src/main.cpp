@@ -254,7 +254,9 @@ void print_banner(const std::string& bind_iface, int port) {
 struct CliOptions {
     std::optional<std::string> plus_data_directory;
     int         port      = kDefaultPort;
-    std::string bind_addr = "0.0.0.0";
+    // Safe default for direct launches. Event LAN remains available through
+    // the existing --bind option and is selected explicitly by the desktop UI.
+    std::string bind_addr = "127.0.0.1";
     std::string pidfile;                   // optional; if set, write JSON {pid,port,startedAt}
     bool        verbose   = false;
     int         start_delay_ms = 0;        // wait before binding (crash-restart uses this)
@@ -280,6 +282,7 @@ struct CliOptions {
     // Refuse every write to liveplay.json through the API (R3). Off by default,
     // like every other posture knob in this server.
     bool lock_server_config = false;
+    bool require_auth = false;             // refuse LAN startup without an admin
 
     // Which tier last set each key. The settings page needs this or it lies:
     // the desktop app always launches with --port, so a port field that wrote
@@ -638,6 +641,8 @@ CliOptions parse_cli(int argc, char** argv, const std::filesystem::path& exe_dir
             // makes the settings page render read-only, saying why. Off by
             // default, like every other posture knob here.
             opts.lock_server_config = true;
+        } else if (a == "--require-auth") {
+            opts.require_auth = true;
         } else if (a == "--pidfile") {
             if (const char* v = next_value()) opts.pidfile = v;
         } else if (a == "--start-delay-ms") {
@@ -723,7 +728,7 @@ CliOptions parse_cli(int argc, char** argv, const std::filesystem::path& exe_dir
                 "\n"
                 "Server:\n"
                 "  -p, --port <port>     Port to listen on (default %d)\n"
-                "  -b, --bind <addr>     Interface to bind (default 0.0.0.0)\n"
+                "  -b, --bind <addr>     Interface to bind (default 127.0.0.1)\n"
                 "      --pidfile <path>  Write JSON {pid,port,startedAt} after binding\n"
                 "      --start-delay-ms <n>  Wait <n> ms before binding (used by crash-restart)\n"
                 "      --meter-hz <n>    WebSocket meter push rate, 1-120 (default %zu)\n"
@@ -743,6 +748,7 @@ CliOptions parse_cli(int argc, char** argv, const std::filesystem::path& exe_dir
                 "      --fs-root <path>  Confine the filesystem API to <path>. Repeatable.\n"
                 "                        Unset, the API can reach the whole filesystem.\n"
                 "      --cors-origin <origin>  Access-Control-Allow-Origin value\n"
+                "      --require-auth     Refuse startup unless login and an admin exist\n"
                 "                        (default \"*\", i.e. any origin may call this server)\n"
                 "      --lock-server-config  Refuse every write to liveplay.json through\n"
                 "                        the API, and make the settings page read-only.\n"
@@ -957,15 +963,23 @@ int main(int argc, char** argv) {
         restart_args += argv[i];
     }
 
-    // Crash logs go to exe_dir/crash-logs by default; set_crash_project_dir
+    const auto runtime_log_dir = [] (const std::filesystem::path& fallback) {
+        if (const char* value = std::getenv("LIVEPLAY_LOG_DIR")) {
+            if (*value) return liveplay::util::utf8_to_path(value);
+        }
+        return fallback;
+    }(exe_dir / "logs");
+
+    // Crash logs go to the writable session directory when supplied by the
+    // desktop launcher; direct/portable launches retain the historical path.
     // overrides this to <project_dir>/logs/ once a project is open.
-    install_crash_handlers((exe_dir / "crash-logs").string());
+    install_crash_handlers((runtime_log_dir / "crash-logs").string());
     set_crash_exe_info(exe_path_str, restart_args);
 
     // Mirror the session to a persistent, size-rotated log file so operators
     // have history even when stdout isn't captured (server launched by the
     // Electron client). Best-effort; console logging is unaffected on failure.
-    Logger::set_log_file((exe_dir / "logs" / "liveplay-server.log").string());
+    Logger::set_log_file((runtime_log_dir / "liveplay-server.log").string());
 
     // Crash-loop protection. Read the persisted consecutive-crash count left by
     // any crashing predecessor; after kMaxConsecutiveCrashes back-to-back
@@ -1129,10 +1143,19 @@ int main(int argc, char** argv) {
     // ------------------------------------------------------------------
     // Project state + control plane (Milestone 3)
     // ------------------------------------------------------------------
+    const auto machine_dir = [] (const std::filesystem::path& fallback) {
+        if (const char* value = std::getenv("LIVEPLAY_MACHINE_DIR")) {
+            if (*value) return liveplay::util::utf8_to_path(value);
+        }
+        return fallback;
+    }(exe_dir);
+    std::error_code machine_ec;
+    std::filesystem::create_directories(machine_dir, machine_ec);
+
     // Logical output name → hardware for this machine. Server-owned and kept
     // out of project files, so a show stays portable between venues.
     auto outputs = std::make_unique<core::OutputMap>();
-    outputs->set_path(exe_dir / "outputs.json");
+    outputs->set_path(machine_dir / "outputs.json");
     outputs->load();   // absent file is fine — names resolve by identity
 
     // The machine's own settings, now with a settings page behind them (P3).
@@ -1151,7 +1174,7 @@ int main(int argc, char** argv) {
     // Who may talk to this server. Machine-owned, beside outputs.json for the
     // same reason: the accounts belong to the rig, not to the show on it.
     auto users = std::make_unique<core::UserStore>();
-    users->set_path(exe_dir / "users.json");
+    users->set_path(machine_dir / "users.json");
     users->load();   // absent file is the open posture, stated below
     if (users->corrupt()) {
         // Refusing to start is the right answer and the uncomfortable one. The
@@ -1166,6 +1189,11 @@ int main(int argc, char** argv) {
         engine->stop();
         return 1;
     }
+    if (opts.require_auth && (!users->auth_required() || !users->has_admin())) {
+        Logger::error("Event LAN Mode refused: create an administrator and enable login in Local Mode first.");
+        engine->stop();
+        return 2;
+    }
 
     // Where a signed-in operator's own preferences live: theme, meter unit,
     // scroll-to-playing, transport keymap. One file per user, created on first
@@ -1174,7 +1202,7 @@ int main(int argc, char** argv) {
     // deliberately no load() to match: profiles fault in per user, so one bad
     // file costs one person's colours rather than the server's ability to boot.
     auto prefs = std::make_unique<core::UserPrefs>();
-    prefs->set_dir(exe_dir / "prefs");
+    prefs->set_dir(machine_dir / "prefs");
 
     auto project = std::make_unique<core::ProjectState>(*engine, *outputs);
     auto backup  = std::make_unique<core::BackupManager>(*project);

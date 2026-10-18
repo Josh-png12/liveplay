@@ -1,0 +1,15 @@
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const root = path.resolve(__dirname, '..');
+const event = fs.readFileSync(path.join(root, 'app/components/EventMvpPanel.vue'), 'utf8');
+const settings = fs.readFileSync(path.join(root, 'app/components/SettingsPaneServer.vue'), 'utf8');
+const electron = fs.readFileSync(path.join(root, 'electron/main.js'), 'utf8');
+const serverMain = fs.readFileSync(path.join(root, '../server/src/main.cpp'), 'utf8');
+assert.match(event, /settings\.eventShowBoard/);
+assert.match(event, /entryCueId/); assert.match(event, /exitCueId/);
+assert.match(settings, /event-lan/); assert.match(settings, /allowedMediaFolders/); assert.match(settings, /authUserCount === 0/);
+assert.match(electron, /'--bind', cfg\.networkProfile/); assert.match(electron, /'--require-auth'/); assert.match(electron, /windowsHide: !cfg\.diagnosticConsole/);
+assert.match(electron, /LIVEPLAY_MACHINE_DIR/); assert.match(electron, /LIVEPLAY_LOG_DIR/);
+assert.match(serverMain, /bind_addr = "127\.0\.0\.1"/); assert.match(serverMain, /Event LAN Mode refused/);
+console.log('Phase 1.9 client/security invariants passed');

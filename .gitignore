@@ -52,3 +52,7 @@ server/CMakeCache.txt
 server/CMakeFiles/
 server/compile_commands.json
 server/.vs/
+
+# Optional MIR worker virtualenv (Phase 2)
+server/tools/mir/.venv/
+server/tools/mir/__pycache__/

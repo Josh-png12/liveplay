@@ -19,6 +19,24 @@ void validate(const json& record) {
         if (record.contains(section) && !record[section].is_null() && !record[section].is_object()) throw std::invalid_argument("invalid analysis section");
     if (record.dump().size() > 8ull * 1024 * 1024) throw std::length_error("analysis too large");
 }
+constexpr std::size_t max_jobs = 4096;
+std::string to_utf8(const fs::path& path) { const auto text = path.u8string(); return std::string(reinterpret_cast<const char*>(text.data()), text.size()); }
+// Relative paths in the store are relative to the plus directory so the whole directory stays portable.
+std::string resolve_stored(const fs::path& plus_root, const std::string& stored) {
+    if (stored.empty()) return stored;
+    const auto path = fs::u8path(stored);
+    if (!path.is_relative()) return stored;
+    const auto relative = path.lexically_normal();
+    if (relative.empty() || *relative.begin() == "..") throw std::runtime_error("invalid portable analysis asset path");
+    return to_utf8(fs::absolute(plus_root / relative));
+}
+std::string portable_stored(const fs::path& plus_root, const std::string& absolute) {
+    if (absolute.empty()) return absolute;
+    const auto relative = fs::u8path(absolute).lexically_relative(plus_root);
+    if (!relative.empty() && *relative.begin() != "..") return to_utf8(relative.generic_u8string());
+    return absolute;
+}
+bool finished(const AnalysisJob& job) { return job.status == "completed" || job.status == "failed" || job.status == "cancelled"; }
 }
 json empty_analysis(const std::string& track_id) {
     return {{"track_id", track_id}, {"analysis_version", 1}, {"status", "pending"}, {"providers", json::object()},
@@ -58,18 +76,13 @@ AnalysisScheduler::AnalysisScheduler(TrackAnalysisRepository& repository, fs::pa
     : repository_(repository), root_(std::move(root)), providers_(std::move(providers)), low_impact_(std::move(low_impact)) {
     const auto path = root_ / "jobs.json";
     if (fs::exists(path)) {
-        const auto doc = util::read_bounded_json(path, 8ull * 1024 * 1024);
-        if (doc.at("schema_version") != 1 || !doc.at("jobs").is_array() || doc.at("jobs").size() > 256)
+        const auto doc = util::read_bounded_json(path, 16ull * 1024 * 1024);
+        if (doc.at("schema_version") != 1 || !doc.at("jobs").is_array() || doc.at("jobs").size() > max_jobs)
             throw std::runtime_error("invalid analysis jobs store");
         for (const auto& item : doc.at("jobs")) {
             auto job = item.get<AnalysisJob>();
-            const auto path = fs::u8path(job.asset_path);
-            if (path.is_relative()) {
-                const auto relative = path.lexically_normal();
-                if (relative.empty() || *relative.begin() == "..") throw std::runtime_error("invalid portable analysis asset path");
-                const auto resolved = fs::absolute(root_.parent_path() / relative).u8string();
-                job.asset_path = std::string(reinterpret_cast<const char*>(resolved.data()), resolved.size());
-            }
+            job.asset_path = resolve_stored(root_.parent_path(), job.asset_path);
+            job.integrity_path = resolve_stored(root_.parent_path(), job.integrity_path);
             if (!valid_track(job.track_id) || job.analysis_version != 1 || job.id != "job_" + job.track_id + "_" + job.provider)
                 throw std::runtime_error("invalid analysis job");
             if (job.status == "running") job.status = "pending";
@@ -82,34 +95,78 @@ AnalysisScheduler::AnalysisScheduler(TrackAnalysisRepository& repository, fs::pa
 AnalysisScheduler::~AnalysisScheduler() { stop(); }
 void AnalysisScheduler::stop() {
     { std::lock_guard lock(mutex_); stopping_ = true; }
-    cv_.notify_all(); if (worker_.joinable()) worker_.join();
+    cv_.notify_all();
+    for (const auto& provider : providers_) provider->cancel_current();
+    if (worker_.joinable()) worker_.join();
+    for (const auto& provider : providers_) provider->release();
 }
 void AnalysisScheduler::persist() const {
     json values = json::array(); for (const auto& [id, job] : jobs_) {
         auto stored = job;
-        const auto relative = fs::u8path(job.asset_path).lexically_relative(root_.parent_path());
-        if (!relative.empty() && *relative.begin() != "..") {
-            const auto portable = relative.generic_u8string();
-            stored.asset_path = std::string(reinterpret_cast<const char*>(portable.data()), portable.size());
-        }
+        stored.asset_path = portable_stored(root_.parent_path(), job.asset_path);
+        stored.integrity_path = portable_stored(root_.parent_path(), job.integrity_path);
         values.push_back(stored);
     }
     util::atomic_write_json(root_ / "jobs.json", {{"schema_version", 1}, {"jobs", values}});
 }
-AnalysisJob AnalysisScheduler::enqueue(const library::Track& track, const std::string& provider) {
+void AnalysisScheduler::set_sink(const std::string& provider, ProviderSink sink) {
+    std::lock_guard lock(mutex_); sinks_[provider] = std::move(sink);
+}
+bool AnalysisScheduler::has_provider(const std::string& id) const {
+    return std::any_of(providers_.begin(), providers_.end(), [&](const auto& p) { return p->id() == id; });
+}
+json AnalysisScheduler::provider_capabilities(const std::string& id) const {
+    for (const auto& provider : providers_) if (provider->id() == id) return provider->capabilities();
+    return json::object();
+}
+AnalysisJob AnalysisScheduler::enqueue(const library::Track& track, const std::string& provider, bool force, const std::string& input_path) {
     if (provider.empty() || provider.size() > 64 || !std::all_of(provider.begin(), provider.end(), [](unsigned char c) { return std::isalnum(c) || c == '-' || c == '_'; }))
         throw std::invalid_argument("invalid provider ID");
     std::lock_guard lock(mutex_);
     if (stopping_) throw std::runtime_error("analysis scheduler stopped");
     AnalysisJob job;
     job.id = "job_" + track.id + "_" + provider; job.track_id = track.id; job.content_hash = track.content_hash;
-    job.provider = provider; job.asset_path = track.asset_path;
-    if (const auto it = jobs_.find(job.id); it != jobs_.end() && it->second.status != "failed") return it->second;
-    if (jobs_.size() >= 256 && !jobs_.contains(job.id)) throw std::length_error("analysis job limit reached");
+    job.provider = provider; job.asset_path = input_path.empty() ? track.asset_path : input_path;
+    if (!input_path.empty() && input_path != track.asset_path) job.integrity_path = track.asset_path;
+    if (const auto it = jobs_.find(job.id); it != jobs_.end()) {
+        if (it->second.status == "pending" || it->second.status == "running") return it->second;
+        if (it->second.status == "completed" && !force) return it->second;
+    }
+    if (jobs_.size() >= max_jobs && !jobs_.contains(job.id)) {
+        for (auto it = jobs_.begin(); it != jobs_.end() && jobs_.size() >= max_jobs;) it = finished(it->second) ? jobs_.erase(it) : std::next(it);
+        if (jobs_.size() >= max_jobs) throw std::length_error("analysis job limit reached");
+    }
     const auto previous = jobs_;
     jobs_[job.id] = job;
     try { persist(); } catch (...) { jobs_ = previous; throw; }
+    cancelled_.erase(job.id);
     queue_.push_back(job.id); cv_.notify_one(); return job;
+}
+std::size_t AnalysisScheduler::cancel(const std::vector<std::string>& track_ids, const std::string& provider) {
+    std::size_t count = 0; bool kill_running = false;
+    {
+        std::lock_guard lock(mutex_);
+        const auto selected = [&](const AnalysisJob& job) {
+            return (provider.empty() || job.provider == provider) &&
+                (track_ids.empty() || std::find(track_ids.begin(), track_ids.end(), job.track_id) != track_ids.end());
+        };
+        for (auto it = queue_.begin(); it != queue_.end();) {
+            auto& job = jobs_.at(*it);
+            if (job.status == "pending" && selected(job)) { job.status = "cancelled"; job.error = "cancelled"; it = queue_.erase(it); ++count; }
+            else ++it;
+        }
+        if (!running_id_.empty()) if (auto it = jobs_.find(running_id_); it != jobs_.end() && it->second.status == "running" && selected(it->second)) {
+            cancelled_.insert(running_id_); kill_running = true; ++count;
+        }
+        if (count) { try { persist(); } catch (...) {} }
+    }
+    if (kill_running) for (const auto& p : providers_) p->cancel_current();
+    return count;
+}
+std::optional<AnalysisJob> AnalysisScheduler::job(const std::string& track_id, const std::string& provider) const {
+    std::lock_guard lock(mutex_);
+    if (const auto it = jobs_.find("job_" + track_id + "_" + provider); it != jobs_.end()) return it->second;
+    return std::nullopt;
 }
 json AnalysisScheduler::jobs() const { std::lock_guard lock(mutex_); json values = json::array(); for (const auto& [id,j] : jobs_) values.push_back(j); return values; }
 json AnalysisScheduler::capabilities() const {
@@ -119,17 +176,23 @@ json AnalysisScheduler::capabilities() const {
 }
 void AnalysisScheduler::run() {
     while (true) {
-        AnalysisJob job;
+        AnalysisJob job; std::shared_ptr<AnalysisProvider> active; ProviderSink sink;
         {
             std::unique_lock lock(mutex_); cv_.wait(lock, [this] { return stopping_ || !queue_.empty(); });
             if (stopping_) return;
-            job = jobs_.at(queue_.front()); queue_.pop_front(); job.status = "running";
-            jobs_[job.id] = job;
-            try { persist(); } catch (const std::exception& e) { jobs_[job.id].status = "failed"; jobs_[job.id].error = e.what(); stopping_ = true; return; }
+            const auto it = jobs_.find(queue_.front()); queue_.pop_front();
+            if (it == jobs_.end() || it->second.status != "pending") continue;
+            job = it->second; job.status = "running";
+            jobs_[job.id] = job; running_id_ = job.id; cancelled_.erase(job.id);
+            if (const auto s = sinks_.find(job.provider); s != sinks_.end()) sink = s->second;
+            try { persist(); } catch (const std::exception& e) { jobs_[job.id].status = "failed"; jobs_[job.id].error = e.what(); running_id_.clear(); stopping_ = true; return; }
         }
         auto result = empty_analysis(job.track_id);
+        const auto was_cancelled = [&] { std::lock_guard lock(mutex_); return cancelled_.contains(job.id); };
         const auto fail = [&](const std::string& error) {
-            job.status = "failed"; job.error = error; result = empty_analysis(job.track_id);
+            job.status = "failed"; job.error = error;
+            if (sink.fail) { try { sink.fail(job, error); } catch (...) {} return; }
+            result = empty_analysis(job.track_id);
             result["status"] = "failed"; result["providers"][job.provider] = {{"status", "failed"}, {"error", job.error}};
             try { repository_.save(result); } catch (...) {}
         };
@@ -137,22 +200,34 @@ void AnalysisScheduler::run() {
             while (low_impact_ && low_impact_()) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(250));
                 std::lock_guard pause_lock(mutex_); if (stopping_) return;
+                if (cancelled_.contains(job.id)) break;
             }
+            if (was_cancelled()) throw std::runtime_error("cancelled");
             const auto provider = std::find_if(providers_.begin(), providers_.end(), [&](const auto& p) { return p->id() == job.provider; });
             if (provider == providers_.end()) throw std::runtime_error("analysis provider unavailable");
+            active = *provider;
             // Independent file/hash validation prevents stale worker output.
-            if (library::hash_asset(job.asset_path) != job.content_hash) throw std::runtime_error("analysis asset integrity mismatch");
-            result = (*provider)->execute(job); validate(result);
-            if (library::hash_asset(job.asset_path) != job.content_hash) throw std::runtime_error("asset changed during analysis");
+            const auto integrity = job.integrity_path.empty() ? job.asset_path : job.integrity_path;
+            if (library::hash_asset(integrity) != job.content_hash) throw std::runtime_error("analysis asset integrity mismatch");
+            if (was_cancelled()) throw std::runtime_error("cancelled");
+            result = (*provider)->execute(job);
+            if (was_cancelled()) throw std::runtime_error("cancelled");
+            if (!sink.accept) validate(result);
+            if (library::hash_asset(integrity) != job.content_hash) throw std::runtime_error("asset changed during analysis");
             if (result.at("track_id") != job.track_id) throw std::runtime_error("provider returned another track");
             result["status"] = "completed"; result["content_hash"] = job.content_hash;
             result["providers"][job.provider] = {{"status", "completed"}};
-            repository_.save(result); job.status = "completed";
+            if (sink.accept) sink.accept(job, result); else repository_.save(result);
+            job.status = "completed"; job.error.clear();
         } catch (const std::exception& e) {
-            fail(e.what());
+            if (was_cancelled()) { job.status = "cancelled"; job.error = "cancelled"; } else fail(e.what());
         } catch (...) { fail("unknown analysis provider failure"); }
-        std::lock_guard lock(mutex_); jobs_[job.id] = job;
-        try { persist(); } catch (...) { stopping_ = true; return; }
+        bool idle = false;
+        {
+            std::lock_guard lock(mutex_); jobs_[job.id] = job; running_id_.clear(); cancelled_.erase(job.id); idle = queue_.empty();
+            try { persist(); } catch (...) { stopping_ = true; return; }
+        }
+        if (idle && active) active->release();
     }
 }
 }
